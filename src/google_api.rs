@@ -462,8 +462,8 @@ pub struct SSERoot {
 }
 
 fn generate_uuid() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::RngExt;
+    let mut rng = rand::rng();
     let mut bytes = [0u8; 16];
     rng.fill(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // UUID v4
@@ -493,7 +493,7 @@ pub async fn trigger_model(
     access_token: &str,
     options: &TriggerOptions,
 ) -> Result<TriggerResult, Box<dyn std::error::Error>> {
-    use rand::Rng;
+    use rand::RngExt;
     let start_time = std::time::Instant::now();
 
     // 1. Warm up session
@@ -552,7 +552,7 @@ pub async fn trigger_model(
         for attempt in 1..=3 {
             if attempt > 1 {
                 // Backoff delay
-                let delay = 500 * (1 << (attempt - 2)) + rand::thread_rng().gen_range(0..100);
+                let delay = 500 * (1 << (attempt - 2)) + rand::rng().random_range(0..100);
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
 

@@ -1,5 +1,5 @@
-use rand::distributions::Alphanumeric;
-use rand::{Rng, thread_rng};
+use rand::distr::Alphanumeric;
+use rand::{RngExt, rng};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use crate::google_api::{
 };
 
 fn generate_state() -> String {
-    thread_rng()
+    rng()
         .sample_iter(&Alphanumeric)
         .take(30)
         .map(char::from)
