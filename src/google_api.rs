@@ -349,3 +349,308 @@ pub async fn get_valid_tokens(
     }
     Ok(tokens.access_token.clone())
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TriggerTokenUsage {
+    pub prompt: u32,
+    pub completion: u32,
+    pub total: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TriggerResult {
+    pub success: bool,
+    pub duration_ms: u128,
+    pub text: String,
+    pub token_usage: Option<TriggerTokenUsage>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TriggerOptions {
+    pub model: String,
+    pub prompt: String,
+    pub max_output_tokens: Option<u32>,
+    pub use_system_instruction: bool,
+    pub project_id: Option<String>,
+}
+
+// Structs for request serialization
+#[derive(Serialize, Debug)]
+pub struct Part {
+    pub text: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Content {
+    pub role: String,
+    pub parts: Vec<Part>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct SystemInstruction {
+    pub parts: Vec<Part>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationConfig {
+    pub temperature: f64,
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRequestDetails {
+    pub contents: Vec<Content>,
+    #[serde(rename = "session_id")]
+    pub session_id: String,
+    pub system_instruction: Option<SystemInstruction>,
+    pub generation_config: GenerationConfig,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRequest {
+    pub request_id: String,
+    pub model: String,
+    pub user_agent: String,
+    pub request_type: String,
+    pub project: Option<String>,
+    pub request: AgentRequestDetails,
+}
+
+// SSE parser structures
+#[derive(Deserialize, Debug)]
+pub struct SSEUsageMetadata {
+    #[serde(rename = "promptTokenCount")]
+    pub prompt_token_count: Option<u32>,
+    #[serde(rename = "candidatesTokenCount")]
+    pub candidates_token_count: Option<u32>,
+    #[serde(rename = "totalTokenCount")]
+    pub total_token_count: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SSEPart {
+    pub text: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SSEContent {
+    pub parts: Option<Vec<SSEPart>>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SSECandidate {
+    pub content: Option<SSEContent>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SSEResponsePayload {
+    pub candidates: Option<Vec<SSECandidate>>,
+    #[serde(rename = "usageMetadata")]
+    pub usage_metadata: Option<SSEUsageMetadata>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SSERoot {
+    pub response: Option<SSEResponsePayload>,
+    pub candidates: Option<Vec<SSECandidate>>,
+    #[serde(rename = "usageMetadata")]
+    pub usage_metadata: Option<SSEUsageMetadata>,
+}
+
+fn generate_uuid() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut bytes = [0u8; 16];
+    rng.fill(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // UUID v4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant RFC 4122
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
+pub async fn trigger_model(
+    access_token: &str,
+    options: &TriggerOptions,
+) -> Result<TriggerResult, Box<dyn std::error::Error>> {
+    use rand::Rng;
+    let start_time = std::time::Instant::now();
+
+    // 1. Warm up session
+    let _ = load_code_assist(access_token).await;
+
+    // 2. Build Request Body
+    let request_id = generate_uuid();
+    let session_id = generate_uuid();
+
+    let system_instruction = if options.use_system_instruction {
+        Some(SystemInstruction {
+            parts: vec![Part {
+                text: "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding. You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**".to_string(),
+            }],
+        })
+    } else {
+        None
+    };
+
+    let payload = AgentRequest {
+        request_id,
+        model: options.model.clone(),
+        user_agent: USER_AGENT.to_string(),
+        request_type: "agent".to_string(),
+        project: options.project_id.clone(),
+        request: AgentRequestDetails {
+            contents: vec![Content {
+                role: "user".to_string(),
+                parts: vec![Part {
+                    text: options.prompt.clone(),
+                }],
+            }],
+            session_id,
+            system_instruction,
+            generation_config: GenerationConfig {
+                temperature: 0.0,
+                max_output_tokens: options.max_output_tokens,
+            },
+        },
+    };
+
+    let base_urls = [
+        "https://cloudcode-pa.googleapis.com",
+        "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    ];
+
+    let client = reqwest::Client::new();
+    let stream_path = "/v1internal:streamGenerateContent?alt=sse";
+
+    let mut last_error = None;
+
+    for base_url in &base_urls {
+        let url = format!("{}{}", base_url, stream_path);
+
+        // Retry logic: 3 attempts per URL
+        for attempt in 1..=3 {
+            if attempt > 1 {
+                // Backoff delay
+                let delay = 500 * (1 << (attempt - 2)) + rand::thread_rng().gen_range(0..100);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+
+            match client
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("User-Agent", USER_AGENT)
+                .header("Content-Type", "application/json")
+                .header("Accept-Encoding", "gzip")
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        if let Ok(text) = response.text().await {
+                            // Parse SSE response
+                            let mut full_text = String::new();
+                            let mut usage = None;
+
+                            for line in text.lines() {
+                                if line.starts_with("data: ") {
+                                    let json_str = &line[6..];
+                                    if json_str.trim() == "[DONE]" {
+                                        continue;
+                                    }
+                                    if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
+                                        let candidates = root
+                                            .response
+                                            .as_ref()
+                                            .and_then(|r| r.candidates.as_ref())
+                                            .or(root.candidates.as_ref());
+                                        if let Some(candidates) = candidates {
+                                            for cand in candidates {
+                                                if let Some(ref content) = cand.content {
+                                                    if let Some(ref parts) = content.parts {
+                                                        for part in parts {
+                                                            if let Some(ref t) = part.text {
+                                                                full_text.push_str(t);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let metadata = root
+                                            .response
+                                            .as_ref()
+                                            .and_then(|r| r.usage_metadata.as_ref())
+                                            .or(root.usage_metadata.as_ref());
+                                        if let Some(m) = metadata {
+                                            usage = Some(TriggerTokenUsage {
+                                                prompt: m.prompt_token_count.unwrap_or(0),
+                                                completion: m.candidates_token_count.unwrap_or(0),
+                                                total: m.total_token_count.unwrap_or(0),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
+                            return Ok(TriggerResult {
+                                success: true,
+                                duration_ms: start_time.elapsed().as_millis(),
+                                text: full_text,
+                                token_usage: usage,
+                                error: None,
+                            });
+                        }
+                    } else {
+                        let err_text = response
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Unknown error".to_string());
+                        last_error = Some(format!("HTTP {} - {}", status, err_text));
+                        if status == 429 || status.is_server_error() {
+                            // Retry
+                            continue;
+                        } else {
+                            // Non-retryable error
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    let err_msg = last_error.unwrap_or_else(|| "All trigger attempts failed".to_string());
+    Ok(TriggerResult {
+        success: false,
+        duration_ms: start_time.elapsed().as_millis(),
+        text: String::new(),
+        token_usage: None,
+        error: Some(err_msg),
+    })
+}

@@ -4,6 +4,7 @@ mod config;
 mod google_api;
 mod oauth;
 mod quota;
+mod wakeup;
 
 #[derive(Parser)]
 #[command(name = "agy-usage")]
@@ -70,6 +71,24 @@ enum Commands {
         /// Account email to check
         #[arg(short, long)]
         account: Option<String>,
+    },
+    /// Trigger models to start quota limitation timers / wakeup
+    Wakeup {
+        /// Models to trigger (comma separated)
+        #[arg(long, value_delimiter = ',')]
+        models: Option<Vec<String>>,
+
+        /// Custom prompt to send
+        #[arg(long)]
+        prompt: Option<String>,
+
+        /// Account email to use
+        #[arg(short, long)]
+        account: Option<String>,
+
+        /// Retain the original long system prompt instead of omitting it
+        #[arg(long)]
+        keep_system_prompt: bool,
     },
 }
 
@@ -246,6 +265,23 @@ async fn main() {
                 account,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
+                eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Wakeup {
+            models,
+            prompt,
+            account,
+            keep_system_prompt,
+        }) => {
+            let opts = wakeup::WakeupOptions {
+                models,
+                prompt,
+                account,
+                keep_system_prompt,
+            };
+            if let Err(e) = wakeup::run_wakeup(opts).await {
                 eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
                 std::process::exit(1);
             }
