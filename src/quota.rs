@@ -1,8 +1,8 @@
-use chrono::{DateTime, Utc};
 use crate::config::get_active_account_tokens;
 use crate::google_api::{
-    fetch_available_models, get_valid_tokens, load_code_assist, resolve_project_id, ModelInfo,
+    ModelInfo, fetch_available_models, get_valid_tokens, load_code_assist, resolve_project_id,
 };
+use chrono::{DateTime, Utc};
 use unicode_width::UnicodeWidthStr;
 
 pub struct QuotaOptions {
@@ -50,7 +50,12 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
     if options.json {
         print_json(&tokens.email, &code_assist, &models_resp);
     } else {
-        print_pretty(&tokens.email, &code_assist, &models_resp, options.all_models);
+        print_pretty(
+            &tokens.email,
+            &code_assist,
+            &models_resp,
+            options.all_models,
+        );
     }
 
     Ok(())
@@ -72,18 +77,18 @@ fn should_show_model(model_id: &str, model: &ModelInfo, all_models: bool) -> boo
     if model.quota_info.is_none() {
         return false;
     }
-    
+
     let is_autocomplete = model_id.contains("gemini-2.5")
         || model
             .display_name
             .as_ref()
             .map(|n| n.contains("Gemini 2.5"))
             .unwrap_or(false);
-            
+
     if !all_models && is_autocomplete {
         return false;
     }
-    
+
     true
 }
 
@@ -96,7 +101,11 @@ fn format_time_until_reset(reset_time_str: &str) -> String {
         }
         let hours = sec / 3600;
         let mins = (sec % 3600) / 60;
-        if hours > 0 {
+        if hours >= 24 {
+            let days = hours / 24;
+            let hours = hours % 24;
+            format!("{}d {}h {}m", days, hours, mins)
+        } else if hours > 0 {
             format!("{}h {}m", hours, mins)
         } else {
             format!("{}m", mins)
@@ -205,7 +214,10 @@ fn print_pretty(
     models_resp: &Option<crate::google_api::FetchAvailableModelsResponse>,
     all_models: bool,
 ) {
-    let now_str = Utc::now().with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string();
+    let now_str = Utc::now()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
     println!("\n\x1b[1;34m📊 Antigravity Quota Status\x1b[0m");
     println!("   Retrieved: {}", now_str);
     println!("   Active Account: \x1b[1m{}\x1b[0m", email);
@@ -235,8 +247,16 @@ fn print_pretty(
         if let Some(models) = &resp.models {
             let mut sorted_models: Vec<(&String, &ModelInfo)> = models.iter().collect();
             sorted_models.sort_by(|a, b| {
-                let name_a = a.1.display_name.as_ref().or(a.1.label.as_ref()).unwrap_or(a.0);
-                let name_b = b.1.display_name.as_ref().or(b.1.label.as_ref()).unwrap_or(b.0);
+                let name_a =
+                    a.1.display_name
+                        .as_ref()
+                        .or(a.1.label.as_ref())
+                        .unwrap_or(a.0);
+                let name_b =
+                    b.1.display_name
+                        .as_ref()
+                        .or(b.1.label.as_ref())
+                        .unwrap_or(b.0);
                 name_a.cmp(name_b)
             });
 
@@ -255,7 +275,10 @@ fn print_pretty(
                     }
 
                     let quota = info.quota_info.as_ref().unwrap();
-                    let rem_pct = format_remaining(quota.remaining_fraction, quota.is_exhausted.unwrap_or(false));
+                    let rem_pct = format_remaining(
+                        quota.remaining_fraction,
+                        quota.is_exhausted.unwrap_or(false),
+                    );
                     let reset_in = quota
                         .reset_time
                         .as_ref()
@@ -269,7 +292,10 @@ fn print_pretty(
     }
 
     if !rows.is_empty() {
-        print_table(&["Model", "Remaining Capacity %", "Remaining Time to Reset"], &rows);
+        print_table(
+            &["Model", "Remaining Capacity %", "Remaining Time to Reset"],
+            &rows,
+        );
     } else {
         println!("No model quota information available.");
     }
@@ -292,10 +318,58 @@ fn print_json(
         email,
         timestamp: Utc::now().to_rfc3339(),
         prompt_credits: serde_json::to_value(code_assist).ok(),
-        models: models_resp.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+        models: models_resp
+            .as_ref()
+            .and_then(|r| serde_json::to_value(r).ok()),
     };
 
     if let Ok(json_str) = serde_json::to_string_pretty(&out) {
         println!("{}", json_str);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn test_format_time_until_reset() {
+        let now = Utc::now();
+
+        // 1. Resets soon
+        let past = now - Duration::seconds(10);
+        assert_eq!(format_time_until_reset(&past.to_rfc3339()), "Resets soon");
+
+        // 2. Under a minute -> 0m
+        let seconds_30 = now + Duration::seconds(30);
+        assert_eq!(format_time_until_reset(&seconds_30.to_rfc3339()), "0m");
+
+        // 3. 2 minutes
+        let mins_2 = now + Duration::seconds(125);
+        assert_eq!(format_time_until_reset(&mins_2.to_rfc3339()), "2m");
+
+        // 4. 1h 1m
+        let hours_1_mins_1 = now + Duration::hours(1) + Duration::minutes(1) + Duration::seconds(5);
+        assert_eq!(
+            format_time_until_reset(&hours_1_mins_1.to_rfc3339()),
+            "1h 1m"
+        );
+
+        // 5. 24h (1d 0h 0m)
+        let hours_24 = now + Duration::hours(24) + Duration::seconds(5);
+        assert_eq!(format_time_until_reset(&hours_24.to_rfc3339()), "1d 0h 0m");
+
+        // 6. 25h 1m (1d 1h 1m)
+        let hours_25_mins_1 =
+            now + Duration::hours(25) + Duration::minutes(1) + Duration::seconds(5);
+        assert_eq!(
+            format_time_until_reset(&hours_25_mins_1.to_rfc3339()),
+            "1d 1h 1m"
+        );
+
+        // 7. 49h (2d 1h 0m)
+        let hours_49 = now + Duration::hours(49) + Duration::seconds(5);
+        assert_eq!(format_time_until_reset(&hours_49.to_rfc3339()), "2d 1h 0m");
     }
 }

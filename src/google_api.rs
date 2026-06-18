@@ -1,9 +1,10 @@
+use crate::config::StoredTokens;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use crate::config::StoredTokens;
 
-pub const OAUTH_CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+pub const OAUTH_CLIENT_ID: &str =
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 pub const OAUTH_CLIENT_SECRET: &str = "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";
 pub const OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -102,7 +103,10 @@ pub fn extract_project_id(val: &serde_json::Value) -> Option<String> {
     }
 }
 
-pub async fn exchange_code_for_tokens(code: &str, redirect_uri: &str) -> Result<OAuthTokenResponse, reqwest::Error> {
+pub async fn exchange_code_for_tokens(
+    code: &str,
+    redirect_uri: &str,
+) -> Result<OAuthTokenResponse, reqwest::Error> {
     let client = reqwest::Client::new();
     let params = [
         ("code", code),
@@ -122,7 +126,9 @@ pub async fn exchange_code_for_tokens(code: &str, redirect_uri: &str) -> Result<
     Ok(res)
 }
 
-pub async fn refresh_access_token(refresh_token: &str) -> Result<OAuthTokenResponse, reqwest::Error> {
+pub async fn refresh_access_token(
+    refresh_token: &str,
+) -> Result<OAuthTokenResponse, reqwest::Error> {
     let client = reqwest::Client::new();
     let params = [
         ("refresh_token", refresh_token),
@@ -154,7 +160,9 @@ pub async fn get_user_email(access_token: &str) -> Result<String, reqwest::Error
     Ok(res.email)
 }
 
-pub async fn load_code_assist(access_token: &str) -> Result<LoadCodeAssistResponse, reqwest::Error> {
+pub async fn load_code_assist(
+    access_token: &str,
+) -> Result<LoadCodeAssistResponse, reqwest::Error> {
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "metadata": {
@@ -163,7 +171,7 @@ pub async fn load_code_assist(access_token: &str) -> Result<LoadCodeAssistRespon
             "pluginType": "GEMINI"
         }
     });
-    
+
     let res = client
         .post(format!("{}/v1internal:loadCodeAssist", CLOUDCODE_BASE_URL))
         .bearer_auth(access_token)
@@ -177,16 +185,22 @@ pub async fn load_code_assist(access_token: &str) -> Result<LoadCodeAssistRespon
     Ok(res)
 }
 
-pub async fn fetch_available_models(access_token: &str, project_id: Option<&str>) -> Result<FetchAvailableModelsResponse, reqwest::Error> {
+pub async fn fetch_available_models(
+    access_token: &str,
+    project_id: Option<&str>,
+) -> Result<FetchAvailableModelsResponse, reqwest::Error> {
     let client = reqwest::Client::new();
     let payload = if let Some(proj) = project_id {
         serde_json::json!({ "project": proj })
     } else {
         serde_json::json!({})
     };
-    
+
     let res = client
-        .post(format!("{}/v1internal:fetchAvailableModels", CLOUDCODE_BASE_URL))
+        .post(format!(
+            "{}/v1internal:fetchAvailableModels",
+            CLOUDCODE_BASE_URL
+        ))
         .bearer_auth(access_token)
         .header("User-Agent", USER_AGENT)
         .json(&payload)
@@ -198,7 +212,10 @@ pub async fn fetch_available_models(access_token: &str, project_id: Option<&str>
     Ok(res)
 }
 
-pub async fn try_onboard_user(access_token: &str, tier_id: &str) -> Result<Option<String>, reqwest::Error> {
+pub async fn try_onboard_user(
+    access_token: &str,
+    tier_id: &str,
+) -> Result<Option<String>, reqwest::Error> {
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "tierId": tier_id,
@@ -208,7 +225,7 @@ pub async fn try_onboard_user(access_token: &str, tier_id: &str) -> Result<Optio
             "pluginType": "GEMINI"
         }
     });
-    
+
     let res = client
         .post(format!("{}/v1internal:onboardUser", CLOUDCODE_BASE_URL))
         .bearer_auth(access_token)
@@ -216,17 +233,17 @@ pub async fn try_onboard_user(access_token: &str, tier_id: &str) -> Result<Optio
         .json(&payload)
         .send()
         .await?;
-        
+
     if !res.status().is_success() {
         return Ok(None);
     }
-    
+
     #[derive(Deserialize)]
     struct OnboardResponse {
         done: Option<bool>,
         response: Option<serde_json::Value>,
     }
-    
+
     if let Ok(onboard_res) = res.json::<OnboardResponse>().await {
         if onboard_res.done == Some(true) {
             if let Some(resp) = onboard_res.response {
@@ -239,7 +256,10 @@ pub async fn try_onboard_user(access_token: &str, tier_id: &str) -> Result<Optio
     Ok(None)
 }
 
-pub fn pick_onboard_tier(response: &LoadCodeAssistResponse, default_tier: Option<&str>) -> Option<String> {
+pub fn pick_onboard_tier(
+    response: &LoadCodeAssistResponse,
+    default_tier: Option<&str>,
+) -> Option<String> {
     if let Some(ref tiers) = response.allowed_tiers {
         // Find default tier
         if let Some(t) = tiers.iter().find(|t| t.is_default == Some(true)) {
@@ -260,34 +280,40 @@ pub fn pick_onboard_tier(response: &LoadCodeAssistResponse, default_tier: Option
     default_tier.map(|s| s.to_string())
 }
 
-pub async fn resolve_project_id(access_token: &str, cached_project_id: Option<&str>) -> Option<String> {
+pub async fn resolve_project_id(
+    access_token: &str,
+    cached_project_id: Option<&str>,
+) -> Option<String> {
     if let Some(p) = cached_project_id {
         if !p.is_empty() {
             return Some(p.to_string());
         }
     }
-    
+
     let load_resp = match load_code_assist(access_token).await {
         Ok(resp) => resp,
         Err(_) => return None,
     };
-    
+
     if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
         if let Some(p) = extract_project_id(proj_val) {
             return Some(p);
         }
     }
-    
+
     // Attempt onboarding
-    let tier_id = load_resp.paid_tier.as_ref().and_then(|t| t.id.clone())
+    let tier_id = load_resp
+        .paid_tier
+        .as_ref()
+        .and_then(|t| t.id.clone())
         .or_else(|| load_resp.current_tier.as_ref().and_then(|t| t.id.clone()));
-        
+
     let onboard_tier = pick_onboard_tier(&load_resp, tier_id.as_deref())?;
-    
+
     if let Ok(Some(proj_id)) = try_onboard_user(access_token, &onboard_tier).await {
         return Some(proj_id);
     }
-    
+
     // Poll loadCodeAssist with retries
     for _ in 0..5 {
         tokio::time::sleep(Duration::from_millis(2000)).await;
@@ -299,11 +325,13 @@ pub async fn resolve_project_id(access_token: &str, cached_project_id: Option<&s
             }
         }
     }
-    
+
     None
 }
 
-pub async fn get_valid_tokens(tokens: &mut StoredTokens) -> Result<String, Box<dyn std::error::Error>> {
+pub async fn get_valid_tokens(
+    tokens: &mut StoredTokens,
+) -> Result<String, Box<dyn std::error::Error>> {
     let now = chrono::Utc::now().timestamp_millis() as u64;
     // Expiry buffer is 5 minutes (300,000 ms)
     let buffer = 5 * 60 * 1000;
@@ -315,7 +343,7 @@ pub async fn get_valid_tokens(tokens: &mut StoredTokens) -> Result<String, Box<d
             tokens.refresh_token = rt;
         }
         tokens.expires_at = now + res.expires_in * 1000;
-        
+
         // Save back
         crate::config::save_account_tokens(&tokens.email, tokens)?;
     }

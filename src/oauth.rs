@@ -1,14 +1,14 @@
 use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use url::Url;
 
-use crate::config::{save_account_tokens, save_global_config, StoredTokens};
+use crate::config::{StoredTokens, save_account_tokens, save_global_config};
 use crate::google_api::{
-    exchange_code_for_tokens, get_user_email, resolve_project_id, OAUTH_AUTH_URL, OAUTH_CLIENT_ID,
+    OAUTH_AUTH_URL, OAUTH_CLIENT_ID, exchange_code_for_tokens, get_user_email, resolve_project_id,
 };
 
 fn generate_state() -> String {
@@ -32,7 +32,10 @@ async fn send_response(
     };
     let response = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status_code, status_text, content.len(), content
+        status_code,
+        status_text,
+        content.len(),
+        content
     );
     socket.write_all(response.as_bytes()).await?;
     socket.flush().await?;
@@ -142,13 +145,13 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                             if let Ok(url) = Url::parse(&format!("http://127.0.0.1:{}", path_and_query)) {
                                 if url.path() == "/callback" {
                                     let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
-                                    
+
                                     if let Some(err) = params.get("error") {
                                         let html = format!("<html><body><h1>Login Failed</h1><p>Google returned error: {}</p></body></html>", err);
                                         let _ = send_response(&mut socket, 400, &html).await;
                                         return Err(format!("Google error: {}", err));
                                     }
-                                    
+
                                     let code = match params.get("code") {
                                         Some(c) => c.clone(),
                                         None => {
@@ -157,7 +160,7 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                                             return Err("Missing code".to_string());
                                         }
                                     };
-                                    
+
                                     let returned_state = match params.get("state") {
                                         Some(s) => s.clone(),
                                         None => {
@@ -166,13 +169,13 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                                             return Err("Missing state".to_string());
                                         }
                                     };
-                                    
+
                                     if returned_state != state {
                                         let html = "<html><body><h1>Invalid Request</h1><p>State mismatch.</p></body></html>";
                                         let _ = send_response(&mut socket, 400, html).await;
                                         return Err("State mismatch".to_string());
                                     }
-                                    
+
                                     // Process login
                                     match complete_login(&code, &redirect_uri).await {
                                         Ok(email) => {
@@ -210,16 +213,19 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
     }
 }
 
-async fn complete_login(code: &str, redirect_uri: &str) -> Result<String, Box<dyn std::error::Error>> {
+async fn complete_login(
+    code: &str,
+    redirect_uri: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     println!("Exchanging authorization code for tokens...");
     let token_resp = exchange_code_for_tokens(code, redirect_uri).await?;
-    
+
     println!("Retrieving user email...");
     let email = get_user_email(&token_resp.access_token).await?;
-    
+
     println!("Resolving project ID...");
     let project_id = resolve_project_id(&token_resp.access_token, None).await;
-    
+
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let tokens = StoredTokens {
         access_token: token_resp.access_token,
@@ -228,13 +234,13 @@ async fn complete_login(code: &str, redirect_uri: &str) -> Result<String, Box<dy
         email: email.clone(),
         project_id,
     };
-    
+
     save_account_tokens(&email, &tokens)?;
-    
+
     // Set as active account
     let mut global = crate::config::load_global_config();
     global.active_email = Some(email.clone());
     save_global_config(&global)?;
-    
+
     Ok(email)
 }

@@ -81,7 +81,7 @@ pub fn save_account_tokens(email: &str, tokens: &StoredTokens) -> Result<(), std
     create_dir_all(&dir)?;
     let path = dir.join("tokens.json");
     let content = serde_json::to_string_pretty(tokens)?;
-    
+
     // On Unix, write with 0o600 permissions
     #[cfg(unix)]
     {
@@ -97,7 +97,7 @@ pub fn save_account_tokens(email: &str, tokens: &StoredTokens) -> Result<(), std
     {
         write(path, content)?;
     }
-    
+
     Ok(())
 }
 
@@ -112,7 +112,7 @@ pub fn list_accounts() -> Vec<String> {
     if !accounts_dir.exists() {
         return vec![];
     }
-    
+
     let mut emails = vec![];
     if let Ok(entries) = accounts_dir.read_dir() {
         for entry in entries.flatten() {
@@ -137,13 +137,13 @@ pub fn remove_account(email: &str) -> Result<(), std::io::Error> {
     if dir.exists() {
         remove_dir_all(dir)?;
     }
-    
+
     // Update global config if this was the active email
     let mut global = load_global_config();
     if Some(email.to_string()) == global.active_email {
         global.active_email = list_accounts().first().cloned();
         save_global_config(&global)?;
     }
-    
+
     Ok(())
 }

@@ -78,13 +78,9 @@ enum AccountsCommands {
     /// List all registered accounts
     List,
     /// Switch the active account
-    Switch {
-        email: String,
-    },
+    Switch { email: String },
     /// Remove an account
-    Remove {
-        email: String,
-    },
+    Remove { email: String },
     /// Show current active account
     Current,
 }
@@ -150,7 +146,10 @@ async fn main() {
                     );
                     std::process::exit(1);
                 }
-                println!("\x1b[32mSuccessfully logged out of active account {}.\x1b[0m", email);
+                println!(
+                    "\x1b[32mSuccessfully logged out of active account {}.\x1b[0m",
+                    email
+                );
             } else {
                 println!("No active account to log out from.");
             }
@@ -206,7 +205,10 @@ async fn main() {
                     let mut global = config::load_global_config();
                     global.active_email = Some(email.clone());
                     if let Err(e) = config::save_global_config(&global) {
-                        eprintln!("\x1b[31;1mError:\x1b[0m Failed to save configuration: {}", e);
+                        eprintln!(
+                            "\x1b[31;1mError:\x1b[0m Failed to save configuration: {}",
+                            e
+                        );
                         std::process::exit(1);
                     }
                     println!("\x1b[32mSwitched active account to: {}\x1b[0m", email);
