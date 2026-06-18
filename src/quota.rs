@@ -292,10 +292,7 @@ fn print_pretty(
     }
 
     if !rows.is_empty() {
-        print_table(
-            &["Model", "Remaining Capacity %", "Remaining Time to Reset"],
-            &rows,
-        );
+        print_table(&["Model", "Remaining %", "Reset In"], &rows);
     } else {
         println!("No model quota information available.");
     }
