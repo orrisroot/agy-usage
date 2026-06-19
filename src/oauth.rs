@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::config::{StoredTokens, save_account_tokens, save_global_config};
 use crate::google_api::{
-    OAUTH_AUTH_URL, OAUTH_CLIENT_ID, exchange_code_for_tokens, get_user_email, resolve_project_id,
+    ApiClient, OAUTH_AUTH_URL, OAUTH_CLIENT_ID, exchange_code_for_tokens, get_user_email,
 };
 
 fn generate_state() -> String {
@@ -223,17 +223,19 @@ async fn complete_login(
     println!("Retrieving user email...");
     let email = get_user_email(&token_resp.access_token, false).await?;
 
-    println!("Resolving project ID...");
-    let project_id = resolve_project_id(&token_resp.access_token, None, false).await;
-
     let now = chrono::Utc::now().timestamp_millis() as u64;
-    let tokens = StoredTokens {
+    let initial_tokens = StoredTokens {
         access_token: token_resp.access_token,
         refresh_token: token_resp.refresh_token.unwrap_or_default(),
         expires_at: now + token_resp.expires_in * 1000,
         email: email.clone(),
-        project_id,
+        project_id: None,
     };
+
+    println!("Resolving project ID...");
+    let mut api_client = ApiClient::new(initial_tokens, false);
+    let _ = api_client.resolve_project_id().await;
+    let tokens = api_client.tokens().clone();
 
     save_account_tokens(&email, &tokens)?;
 

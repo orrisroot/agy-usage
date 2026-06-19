@@ -307,129 +307,6 @@ pub async fn get_user_email(
     Ok(parsed.email)
 }
 
-pub async fn load_code_assist(
-    access_token: &str,
-    debug: bool,
-) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let payload = serde_json::json!({
-        "metadata": {
-            "ideType": "ANTIGRAVITY",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI"
-        }
-    });
-
-    let builder = client
-        .post(format!("{}/v1internal:loadCodeAssist", CLOUDCODE_BASE_URL))
-        .bearer_auth(access_token)
-        .header("User-Agent", USER_AGENT)
-        .json(&payload);
-
-    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
-    let res = res.error_for_status()?;
-    let parsed = res.json::<LoadCodeAssistResponse>()?;
-    Ok(parsed)
-}
-
-pub async fn fetch_available_models(
-    access_token: &str,
-    project_id: Option<&str>,
-    debug: bool,
-) -> Result<FetchAvailableModelsResponse, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let payload = if let Some(proj) = project_id {
-        serde_json::json!({ "project": proj })
-    } else {
-        serde_json::json!({})
-    };
-
-    let builder = client
-        .post(format!(
-            "{}/v1internal:fetchAvailableModels",
-            CLOUDCODE_BASE_URL
-        ))
-        .bearer_auth(access_token)
-        .header("User-Agent", USER_AGENT)
-        .json(&payload);
-
-    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
-    let res = res.error_for_status()?;
-    let parsed = res.json::<FetchAvailableModelsResponse>()?;
-    Ok(parsed)
-}
-
-pub async fn retrieve_user_quota_summary(
-    access_token: &str,
-    project_id: Option<&str>,
-    debug: bool,
-) -> Result<RetrieveUserQuotaSummaryResponse, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let payload = if let Some(proj) = project_id {
-        serde_json::json!({ "project": proj })
-    } else {
-        serde_json::json!({})
-    };
-
-    let builder = client
-        .post(format!(
-            "{}/v1internal:retrieveUserQuotaSummary",
-            CLOUDCODE_BASE_URL
-        ))
-        .bearer_auth(access_token)
-        .header("User-Agent", USER_AGENT)
-        .json(&payload);
-
-    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
-    let res = res.error_for_status()?;
-    let parsed = res.json::<RetrieveUserQuotaSummaryResponse>()?;
-    Ok(parsed)
-}
-
-pub async fn try_onboard_user(
-    access_token: &str,
-    tier_id: &str,
-    debug: bool,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let payload = serde_json::json!({
-        "tierId": tier_id,
-        "metadata": {
-            "ideType": "ANTIGRAVITY",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI"
-        }
-    });
-
-    let builder = client
-        .post(format!("{}/v1internal:onboardUser", CLOUDCODE_BASE_URL))
-        .bearer_auth(access_token)
-        .header("User-Agent", USER_AGENT)
-        .json(&payload);
-
-    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
-    if !res.status.is_success() {
-        return Ok(None);
-    }
-
-    #[derive(Deserialize)]
-    struct OnboardResponse {
-        done: Option<bool>,
-        response: Option<serde_json::Value>,
-    }
-
-    if let Ok(onboard_res) = res.json::<OnboardResponse>() {
-        if onboard_res.done == Some(true) {
-            if let Some(resp) = onboard_res.response {
-                if let Some(proj) = resp.get("cloudaicompanionProject") {
-                    return Ok(extract_project_id(proj));
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
 pub fn pick_onboard_tier(
     response: &LoadCodeAssistResponse,
     default_tier: Option<&str>,
@@ -454,76 +331,473 @@ pub fn pick_onboard_tier(
     default_tier.map(|s| s.to_string())
 }
 
-pub async fn resolve_project_id(
-    access_token: &str,
-    cached_project_id: Option<&str>,
+#[derive(Clone, Debug)]
+pub struct ApiClient {
+    client: reqwest::Client,
+    tokens: StoredTokens,
     debug: bool,
-) -> Option<String> {
-    if let Some(p) = cached_project_id {
-        if !p.is_empty() {
-            return Some(p.to_string());
+    dirty: bool,
+}
+
+impl ApiClient {
+    pub fn new(tokens: StoredTokens, debug: bool) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            tokens,
+            debug,
+            dirty: false,
         }
     }
 
-    let load_resp = match load_code_assist(access_token, debug).await {
-        Ok(resp) => resp,
-        Err(_) => return None,
-    };
+    pub fn tokens(&self) -> &StoredTokens {
+        &self.tokens
+    }
 
-    if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
-        if let Some(p) = extract_project_id(proj_val) {
-            return Some(p);
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub async fn ensure_valid_token(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        // Expiry buffer is 5 minutes (300,000 ms)
+        let buffer = 5 * 60 * 1000;
+        if now >= self.tokens.expires_at - buffer {
+            // Refresh token
+            let res = refresh_access_token(&self.tokens.refresh_token, self.debug).await?;
+            self.tokens.access_token = res.access_token;
+            if let Some(rt) = res.refresh_token {
+                self.tokens.refresh_token = rt;
+            }
+            self.tokens.expires_at = now + res.expires_in * 1000;
+            self.dirty = true;
         }
+        Ok(self.tokens.access_token.clone())
     }
 
-    // Attempt onboarding
-    let tier_id = load_resp
-        .paid_tier
-        .as_ref()
-        .and_then(|t| t.id.clone())
-        .or_else(|| load_resp.current_tier.as_ref().and_then(|t| t.id.clone()));
+    async fn execute_request(
+        &self,
+        builder: reqwest::RequestBuilder,
+        body_for_log: Option<String>,
+    ) -> Result<ApiResponse, reqwest::Error> {
+        let request = builder.build()?;
+        if self.debug {
+            eprintln!("\n\x1b[33;1m--- API Request ---\x1b[0m");
+            eprintln!("Method: {}", request.method());
+            eprintln!("URL: {}", request.url());
+            eprintln!("Headers:");
+            for (name, value) in request.headers() {
+                if name == reqwest::header::AUTHORIZATION {
+                    if let Ok(val_str) = value.to_str() {
+                        if val_str.starts_with("Bearer ") {
+                            let token = &val_str[7..];
+                            let masked = if token.len() > 12 {
+                                format!("Bearer {}...{}", &token[..6], &token[token.len() - 6..])
+                            } else {
+                                "Bearer ***".to_string()
+                            };
+                            eprintln!("  {}: {}", name, masked);
+                        } else {
+                            eprintln!("  {}: ***", name);
+                        }
+                    } else {
+                        eprintln!("  {}: ***", name);
+                    }
+                } else {
+                    eprintln!("  {}: {:?}", name, value);
+                }
+            }
+            if let Some(body) = body_for_log {
+                let mut sanitized = body;
+                if sanitized.contains(OAUTH_CLIENT_SECRET) {
+                    sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
+                }
+                eprintln!("Body: {}", sanitized);
+            } else if let Some(body) = request.body() {
+                if let Some(bytes) = body.as_bytes() {
+                    if let Ok(s) = std::str::from_utf8(bytes) {
+                        let mut sanitized = s.to_string();
+                        if sanitized.contains(OAUTH_CLIENT_SECRET) {
+                            sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
+                        }
+                        eprintln!("Body: {}", sanitized);
+                    }
+                }
+            }
+            eprintln!("\x1b[33;1m-------------------\x1b[0m");
+        }
 
-    let onboard_tier = pick_onboard_tier(&load_resp, tier_id.as_deref())?;
+        let response = self.client.execute(request).await?;
 
-    if let Ok(Some(proj_id)) = try_onboard_user(access_token, &onboard_tier, debug).await {
-        return Some(proj_id);
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body_bytes = response.bytes().await?;
+        let body = body_bytes.to_vec();
+
+        if self.debug {
+            eprintln!("\n\x1b[32;1m--- API Response ---\x1b[0m");
+            eprintln!("Status: {}", status);
+            eprintln!("Headers:");
+            for (name, value) in &headers {
+                eprintln!("  {}: {:?}", name, value);
+            }
+            if let Ok(s) = std::str::from_utf8(&body) {
+                eprintln!("Body: {}", s);
+            } else {
+                eprintln!("Body: <binary/non-utf8>");
+            }
+            eprintln!("\x1b[32;1m--------------------\x1b[0m");
+        }
+
+        Ok(ApiResponse {
+            status,
+            headers,
+            body,
+        })
     }
 
-    // Poll loadCodeAssist with retries
-    for _ in 0..5 {
-        tokio::time::sleep(Duration::from_millis(2000)).await;
-        if let Ok(resp) = load_code_assist(access_token, debug).await {
-            if let Some(ref proj_val) = resp.cloudaicompanion_project {
-                if let Some(p) = extract_project_id(proj_val) {
-                    return Some(p);
+    pub async fn load_code_assist(
+        &mut self,
+    ) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
+        let access_token = self.ensure_valid_token().await?;
+        let payload = serde_json::json!({
+            "metadata": {
+                "ideType": "ANTIGRAVITY",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI"
+            }
+        });
+
+        let client = self.client.clone();
+        let builder = client
+            .post(format!("{}/v1internal:loadCodeAssist", CLOUDCODE_BASE_URL))
+            .bearer_auth(access_token)
+            .header("User-Agent", USER_AGENT)
+            .json(&payload);
+
+        let res = self
+            .execute_request(builder, Some(payload.to_string()))
+            .await?;
+        let res = res.error_for_status()?;
+        let parsed = res.json::<LoadCodeAssistResponse>()?;
+        Ok(parsed)
+    }
+
+    pub async fn fetch_available_models(
+        &mut self,
+    ) -> Result<FetchAvailableModelsResponse, Box<dyn std::error::Error>> {
+        let access_token = self.ensure_valid_token().await?;
+        let payload = if let Some(ref proj) = self.tokens.project_id {
+            serde_json::json!({ "project": proj })
+        } else {
+            serde_json::json!({})
+        };
+
+        let client = self.client.clone();
+        let builder = client
+            .post(format!(
+                "{}/v1internal:fetchAvailableModels",
+                CLOUDCODE_BASE_URL
+            ))
+            .bearer_auth(access_token)
+            .header("User-Agent", USER_AGENT)
+            .json(&payload);
+
+        let res = self
+            .execute_request(builder, Some(payload.to_string()))
+            .await?;
+        let res = res.error_for_status()?;
+        let parsed = res.json::<FetchAvailableModelsResponse>()?;
+        Ok(parsed)
+    }
+
+    pub async fn retrieve_user_quota_summary(
+        &mut self,
+    ) -> Result<RetrieveUserQuotaSummaryResponse, Box<dyn std::error::Error>> {
+        let access_token = self.ensure_valid_token().await?;
+        let payload = if let Some(ref proj) = self.tokens.project_id {
+            serde_json::json!({ "project": proj })
+        } else {
+            serde_json::json!({})
+        };
+
+        let client = self.client.clone();
+        let builder = client
+            .post(format!(
+                "{}/v1internal:retrieveUserQuotaSummary",
+                CLOUDCODE_BASE_URL
+            ))
+            .bearer_auth(access_token)
+            .header("User-Agent", USER_AGENT)
+            .json(&payload);
+
+        let res = self
+            .execute_request(builder, Some(payload.to_string()))
+            .await?;
+        let res = res.error_for_status()?;
+        let parsed = res.json::<RetrieveUserQuotaSummaryResponse>()?;
+        Ok(parsed)
+    }
+
+    pub async fn try_onboard_user(
+        &mut self,
+        tier_id: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let access_token = self.ensure_valid_token().await?;
+        let payload = serde_json::json!({
+            "tierId": tier_id,
+            "metadata": {
+                "ideType": "ANTIGRAVITY",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI"
+            }
+        });
+
+        let client = self.client.clone();
+        let builder = client
+            .post(format!("{}/v1internal:onboardUser", CLOUDCODE_BASE_URL))
+            .bearer_auth(access_token)
+            .header("User-Agent", USER_AGENT)
+            .json(&payload);
+
+        let res = self
+            .execute_request(builder, Some(payload.to_string()))
+            .await?;
+        if !res.status.is_success() {
+            return Ok(None);
+        }
+
+        #[derive(Deserialize)]
+        struct OnboardResponse {
+            done: Option<bool>,
+            response: Option<serde_json::Value>,
+        }
+
+        if let Ok(onboard_res) = res.json::<OnboardResponse>() {
+            if onboard_res.done == Some(true) {
+                if let Some(resp) = onboard_res.response {
+                    if let Some(proj) = resp.get("cloudaicompanionProject") {
+                        return Ok(extract_project_id(proj));
+                    }
                 }
             }
         }
+        Ok(None)
     }
 
-    None
-}
-
-pub async fn get_valid_tokens(
-    tokens: &mut StoredTokens,
-    debug: bool,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let now = chrono::Utc::now().timestamp_millis() as u64;
-    // Expiry buffer is 5 minutes (300,000 ms)
-    let buffer = 5 * 60 * 1000;
-    if now >= tokens.expires_at - buffer {
-        // Refresh token
-        let res = refresh_access_token(&tokens.refresh_token, debug).await?;
-        tokens.access_token = res.access_token;
-        if let Some(rt) = res.refresh_token {
-            tokens.refresh_token = rt;
+    pub async fn resolve_project_id(&mut self) -> Option<String> {
+        if let Some(ref p) = self.tokens.project_id {
+            if !p.is_empty() {
+                return Some(p.clone());
+            }
         }
-        tokens.expires_at = now + res.expires_in * 1000;
 
-        // Save back
-        crate::config::save_account_tokens(&tokens.email, tokens)?;
+        let load_resp = match self.load_code_assist().await {
+            Ok(resp) => resp,
+            Err(_) => return None,
+        };
+
+        if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
+            if let Some(p) = extract_project_id(proj_val) {
+                self.tokens.project_id = Some(p.clone());
+                self.dirty = true;
+                return Some(p);
+            }
+        }
+
+        // Attempt onboarding
+        let tier_id = load_resp
+            .paid_tier
+            .as_ref()
+            .and_then(|t| t.id.clone())
+            .or_else(|| load_resp.current_tier.as_ref().and_then(|t| t.id.clone()));
+
+        let onboard_tier = pick_onboard_tier(&load_resp, tier_id.as_deref())?;
+
+        if let Ok(Some(proj_id)) = self.try_onboard_user(&onboard_tier).await {
+            self.tokens.project_id = Some(proj_id.clone());
+            self.dirty = true;
+            return Some(proj_id);
+        }
+
+        // Poll loadCodeAssist with retries
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+            if let Ok(resp) = self.load_code_assist().await {
+                if let Some(ref proj_val) = resp.cloudaicompanion_project {
+                    if let Some(p) = extract_project_id(proj_val) {
+                        self.tokens.project_id = Some(p.clone());
+                        self.dirty = true;
+                        return Some(p);
+                    }
+                }
+            }
+        }
+
+        None
     }
-    Ok(tokens.access_token.clone())
+
+    pub async fn trigger_model(
+        &mut self,
+        options: &TriggerOptions,
+    ) -> Result<TriggerResult, Box<dyn std::error::Error>> {
+        use rand::RngExt;
+        let start_time = std::time::Instant::now();
+
+        // 1. Warm up session
+        let _ = self.load_code_assist().await;
+
+        // 2. Build Request Body
+        let request_id = generate_uuid();
+        let session_id = generate_uuid();
+
+        let system_instruction = if options.use_system_instruction {
+            Some(SystemInstruction {
+                parts: vec![Part {
+                    text: "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding. You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**".to_string(),
+                }],
+            })
+        } else {
+            None
+        };
+
+        let payload = AgentRequest {
+            request_id,
+            model: options.model.clone(),
+            user_agent: USER_AGENT.to_string(),
+            request_type: "agent".to_string(),
+            project: options.project_id.clone(),
+            request: AgentRequestDetails {
+                contents: vec![Content {
+                    role: "user".to_string(),
+                    parts: vec![Part {
+                        text: options.prompt.clone(),
+                    }],
+                }],
+                session_id,
+                system_instruction,
+                generation_config: GenerationConfig {
+                    temperature: 0.0,
+                    max_output_tokens: options.max_output_tokens,
+                },
+            },
+        };
+
+        let base_urls = [
+            "https://cloudcode-pa.googleapis.com",
+            "https://daily-cloudcode-pa.sandbox.googleapis.com",
+        ];
+
+        let stream_path = "/v1internal:streamGenerateContent?alt=sse";
+
+        let mut last_error = None;
+
+        for base_url in &base_urls {
+            let url = format!("{}{}", base_url, stream_path);
+
+            // Retry logic: 3 attempts per URL
+            for attempt in 1..=3 {
+                if attempt > 1 {
+                    // Backoff delay
+                    let delay = 500 * (1 << (attempt - 2)) + rand::rng().random_range(0..100);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+
+                let access_token = self.ensure_valid_token().await?;
+                let client = self.client.clone();
+                let builder = client
+                    .post(&url)
+                    .bearer_auth(access_token)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Content-Type", "application/json")
+                    .header("Accept-Encoding", "gzip")
+                    .json(&payload);
+
+                let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+                match self.execute_request(builder, Some(payload_str)).await {
+                    Ok(res) => {
+                        let status = res.status;
+                        if status.is_success() {
+                            let text = res.text();
+                            // Parse SSE response
+                            let mut full_text = String::new();
+                            let mut usage = None;
+
+                            for line in text.lines() {
+                                if line.starts_with("data: ") {
+                                    let json_str = &line[6..];
+                                    if json_str.trim() == "[DONE]" {
+                                        continue;
+                                    }
+                                    if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
+                                        let candidates = root
+                                            .response
+                                            .as_ref()
+                                            .and_then(|r| r.candidates.as_ref())
+                                            .or(root.candidates.as_ref());
+                                        if let Some(candidates) = candidates {
+                                            for cand in candidates {
+                                                if let Some(ref content) = cand.content {
+                                                    if let Some(ref parts) = content.parts {
+                                                        for part in parts {
+                                                            if let Some(ref t) = part.text {
+                                                                full_text.push_str(t);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let metadata = root
+                                            .response
+                                            .as_ref()
+                                            .and_then(|r| r.usage_metadata.as_ref())
+                                            .or(root.usage_metadata.as_ref());
+                                        if let Some(m) = metadata {
+                                            usage = Some(TriggerTokenUsage {
+                                                prompt: m.prompt_token_count.unwrap_or(0),
+                                                completion: m.candidates_token_count.unwrap_or(0),
+                                                total: m.total_token_count.unwrap_or(0),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
+                            return Ok(TriggerResult {
+                                success: true,
+                                duration_ms: start_time.elapsed().as_millis(),
+                                text: full_text,
+                                token_usage: usage,
+                                error: None,
+                            });
+                        } else {
+                            let err_text = res.text();
+                            last_error = Some(format!("HTTP {} - {}", status, err_text));
+                            if status == 429 || status.is_server_error() {
+                                // Retry
+                                continue;
+                            } else {
+                                // Non-retryable error
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_error = Some(e.to_string());
+                    }
+                }
+            }
+        }
+
+        let err_msg = last_error.unwrap_or_else(|| "All trigger attempts failed".to_string());
+        Ok(TriggerResult {
+            success: false,
+            duration_ms: start_time.elapsed().as_millis(),
+            text: String::new(),
+            token_usage: None,
+            error: Some(err_msg),
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -663,167 +937,4 @@ fn generate_uuid() -> String {
         bytes[14],
         bytes[15]
     )
-}
-
-pub async fn trigger_model(
-    access_token: &str,
-    options: &TriggerOptions,
-    debug: bool,
-) -> Result<TriggerResult, Box<dyn std::error::Error>> {
-    use rand::RngExt;
-    let start_time = std::time::Instant::now();
-
-    // 1. Warm up session
-    let _ = load_code_assist(access_token, debug).await;
-
-    // 2. Build Request Body
-    let request_id = generate_uuid();
-    let session_id = generate_uuid();
-
-    let system_instruction = if options.use_system_instruction {
-        Some(SystemInstruction {
-            parts: vec![Part {
-                text: "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding. You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**".to_string(),
-            }],
-        })
-    } else {
-        None
-    };
-
-    let payload = AgentRequest {
-        request_id,
-        model: options.model.clone(),
-        user_agent: USER_AGENT.to_string(),
-        request_type: "agent".to_string(),
-        project: options.project_id.clone(),
-        request: AgentRequestDetails {
-            contents: vec![Content {
-                role: "user".to_string(),
-                parts: vec![Part {
-                    text: options.prompt.clone(),
-                }],
-            }],
-            session_id,
-            system_instruction,
-            generation_config: GenerationConfig {
-                temperature: 0.0,
-                max_output_tokens: options.max_output_tokens,
-            },
-        },
-    };
-
-    let base_urls = [
-        "https://cloudcode-pa.googleapis.com",
-        "https://daily-cloudcode-pa.sandbox.googleapis.com",
-    ];
-
-    let stream_path = "/v1internal:streamGenerateContent?alt=sse";
-
-    let mut last_error = None;
-
-    for base_url in &base_urls {
-        let url = format!("{}{}", base_url, stream_path);
-
-        // Retry logic: 3 attempts per URL
-        for attempt in 1..=3 {
-            if attempt > 1 {
-                // Backoff delay
-                let delay = 500 * (1 << (attempt - 2)) + rand::rng().random_range(0..100);
-                tokio::time::sleep(Duration::from_millis(delay)).await;
-            }
-
-            let client = reqwest::Client::new();
-            let builder = client
-                .post(&url)
-                .bearer_auth(access_token)
-                .header("User-Agent", USER_AGENT)
-                .header("Content-Type", "application/json")
-                .header("Accept-Encoding", "gzip")
-                .json(&payload);
-
-            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
-            match execute_request(builder, Some(payload_str), debug).await {
-                Ok(res) => {
-                    let status = res.status;
-                    if status.is_success() {
-                        let text = res.text();
-                        // Parse SSE response
-                        let mut full_text = String::new();
-                        let mut usage = None;
-
-                        for line in text.lines() {
-                            if line.starts_with("data: ") {
-                                let json_str = &line[6..];
-                                if json_str.trim() == "[DONE]" {
-                                    continue;
-                                }
-                                if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
-                                    let candidates = root
-                                        .response
-                                        .as_ref()
-                                        .and_then(|r| r.candidates.as_ref())
-                                        .or(root.candidates.as_ref());
-                                    if let Some(candidates) = candidates {
-                                        for cand in candidates {
-                                            if let Some(ref content) = cand.content {
-                                                if let Some(ref parts) = content.parts {
-                                                    for part in parts {
-                                                        if let Some(ref t) = part.text {
-                                                            full_text.push_str(t);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    let metadata = root
-                                        .response
-                                        .as_ref()
-                                        .and_then(|r| r.usage_metadata.as_ref())
-                                        .or(root.usage_metadata.as_ref());
-                                    if let Some(m) = metadata {
-                                        usage = Some(TriggerTokenUsage {
-                                            prompt: m.prompt_token_count.unwrap_or(0),
-                                            completion: m.candidates_token_count.unwrap_or(0),
-                                            total: m.total_token_count.unwrap_or(0),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-
-                        return Ok(TriggerResult {
-                            success: true,
-                            duration_ms: start_time.elapsed().as_millis(),
-                            text: full_text,
-                            token_usage: usage,
-                            error: None,
-                        });
-                    } else {
-                        let err_text = res.text();
-                        last_error = Some(format!("HTTP {} - {}", status, err_text));
-                        if status == 429 || status.is_server_error() {
-                            // Retry
-                            continue;
-                        } else {
-                            // Non-retryable error
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    last_error = Some(e.to_string());
-                }
-            }
-        }
-    }
-
-    let err_msg = last_error.unwrap_or_else(|| "All trigger attempts failed".to_string());
-    Ok(TriggerResult {
-        success: false,
-        duration_ms: start_time.elapsed().as_millis(),
-        text: String::new(),
-        token_usage: None,
-        error: Some(err_msg),
-    })
 }
