@@ -103,10 +103,119 @@ pub fn extract_project_id(val: &serde_json::Value) -> Option<String> {
     }
 }
 
+pub struct ApiResponse {
+    pub status: reqwest::StatusCode,
+    #[allow(dead_code)]
+    pub headers: reqwest::header::HeaderMap,
+    pub body: Vec<u8>,
+}
+
+impl ApiResponse {
+    pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.body)
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+
+    pub fn error_for_status(self) -> Result<Self, Box<dyn std::error::Error>> {
+        if self.status.is_client_error() || self.status.is_server_error() {
+            let body_str = self.text();
+            Err(format!("HTTP {} - {}", self.status, body_str).into())
+        } else {
+            Ok(self)
+        }
+    }
+}
+
+pub async fn execute_request(
+    builder: reqwest::RequestBuilder,
+    body_for_log: Option<String>,
+    debug: bool,
+) -> Result<ApiResponse, reqwest::Error> {
+    let request = builder.build()?;
+    if debug {
+        eprintln!("\n\x1b[33;1m--- API Request ---\x1b[0m");
+        eprintln!("Method: {}", request.method());
+        eprintln!("URL: {}", request.url());
+        eprintln!("Headers:");
+        for (name, value) in request.headers() {
+            if name == reqwest::header::AUTHORIZATION {
+                if let Ok(val_str) = value.to_str() {
+                    if val_str.starts_with("Bearer ") {
+                        let token = &val_str[7..];
+                        let masked = if token.len() > 12 {
+                            format!("Bearer {}...{}", &token[..6], &token[token.len() - 6..])
+                        } else {
+                            "Bearer ***".to_string()
+                        };
+                        eprintln!("  {}: {}", name, masked);
+                    } else {
+                        eprintln!("  {}: ***", name);
+                    }
+                } else {
+                    eprintln!("  {}: ***", name);
+                }
+            } else {
+                eprintln!("  {}: {:?}", name, value);
+            }
+        }
+        if let Some(body) = body_for_log {
+            let mut sanitized = body;
+            if sanitized.contains(OAUTH_CLIENT_SECRET) {
+                sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
+            }
+            eprintln!("Body: {}", sanitized);
+        } else if let Some(body) = request.body() {
+            if let Some(bytes) = body.as_bytes() {
+                if let Ok(s) = std::str::from_utf8(bytes) {
+                    let mut sanitized = s.to_string();
+                    if sanitized.contains(OAUTH_CLIENT_SECRET) {
+                        sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
+                    }
+                    eprintln!("Body: {}", sanitized);
+                }
+            }
+        }
+        eprintln!("\x1b[33;1m-------------------\x1b[0m");
+    }
+
+    let client = reqwest::Client::new();
+    let response = client.execute(request).await?;
+
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body_bytes = response.bytes().await?;
+    let body = body_bytes.to_vec();
+
+    if debug {
+        eprintln!("\n\x1b[32;1m--- API Response ---\x1b[0m");
+        eprintln!("Status: {}", status);
+        eprintln!("Headers:");
+        for (name, value) in &headers {
+            eprintln!("  {}: {:?}", name, value);
+        }
+        if let Ok(s) = std::str::from_utf8(&body) {
+            eprintln!("Body: {}", s);
+        } else {
+            eprintln!("Body: <binary/non-utf8>");
+        }
+        eprintln!("\x1b[32;1m--------------------\x1b[0m");
+    }
+
+    Ok(ApiResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
 pub async fn exchange_code_for_tokens(
     code: &str,
     redirect_uri: &str,
-) -> Result<OAuthTokenResponse, reqwest::Error> {
+    debug: bool,
+) -> Result<OAuthTokenResponse, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let params = [
         ("code", code),
@@ -115,20 +224,22 @@ pub async fn exchange_code_for_tokens(
         ("redirect_uri", redirect_uri),
         ("grant_type", "authorization_code"),
     ];
-    let res = client
-        .post(OAUTH_TOKEN_URL)
-        .form(&params)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<OAuthTokenResponse>()
-        .await?;
-    Ok(res)
+    let builder = client.post(OAUTH_TOKEN_URL).form(&params);
+
+    let log_body = format!(
+        "code={}&client_id={}&client_secret=GOCSPX-***&redirect_uri={}&grant_type=authorization_code",
+        code, OAUTH_CLIENT_ID, redirect_uri
+    );
+    let res = execute_request(builder, Some(log_body), debug).await?;
+    let res = res.error_for_status()?;
+    let parsed = res.json::<OAuthTokenResponse>()?;
+    Ok(parsed)
 }
 
 pub async fn refresh_access_token(
     refresh_token: &str,
-) -> Result<OAuthTokenResponse, reqwest::Error> {
+    debug: bool,
+) -> Result<OAuthTokenResponse, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let params = [
         ("refresh_token", refresh_token),
@@ -136,33 +247,37 @@ pub async fn refresh_access_token(
         ("client_secret", OAUTH_CLIENT_SECRET),
         ("grant_type", "refresh_token"),
     ];
-    let res = client
-        .post(OAUTH_TOKEN_URL)
-        .form(&params)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<OAuthTokenResponse>()
-        .await?;
-    Ok(res)
+    let builder = client.post(OAUTH_TOKEN_URL).form(&params);
+
+    let log_body = format!(
+        "refresh_token=***&client_id={}&client_secret=GOCSPX-***&grant_type=refresh_token",
+        OAUTH_CLIENT_ID
+    );
+    let res = execute_request(builder, Some(log_body), debug).await?;
+    let res = res.error_for_status()?;
+    let parsed = res.json::<OAuthTokenResponse>()?;
+    Ok(parsed)
 }
 
-pub async fn get_user_email(access_token: &str) -> Result<String, reqwest::Error> {
+pub async fn get_user_email(
+    access_token: &str,
+    debug: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    let res = client
+    let builder = client
         .get("https://www.googleapis.com/oauth2/v2/userinfo")
-        .bearer_auth(access_token)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<UserInfoResponse>()
-        .await?;
-    Ok(res.email)
+        .bearer_auth(access_token);
+
+    let res = execute_request(builder, None, debug).await?;
+    let res = res.error_for_status()?;
+    let parsed = res.json::<UserInfoResponse>()?;
+    Ok(parsed.email)
 }
 
 pub async fn load_code_assist(
     access_token: &str,
-) -> Result<LoadCodeAssistResponse, reqwest::Error> {
+    debug: bool,
+) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "metadata": {
@@ -172,23 +287,23 @@ pub async fn load_code_assist(
         }
     });
 
-    let res = client
+    let builder = client
         .post(format!("{}/v1internal:loadCodeAssist", CLOUDCODE_BASE_URL))
         .bearer_auth(access_token)
         .header("User-Agent", USER_AGENT)
-        .json(&payload)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<LoadCodeAssistResponse>()
-        .await?;
-    Ok(res)
+        .json(&payload);
+
+    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
+    let res = res.error_for_status()?;
+    let parsed = res.json::<LoadCodeAssistResponse>()?;
+    Ok(parsed)
 }
 
 pub async fn fetch_available_models(
     access_token: &str,
     project_id: Option<&str>,
-) -> Result<FetchAvailableModelsResponse, reqwest::Error> {
+    debug: bool,
+) -> Result<FetchAvailableModelsResponse, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let payload = if let Some(proj) = project_id {
         serde_json::json!({ "project": proj })
@@ -196,26 +311,26 @@ pub async fn fetch_available_models(
         serde_json::json!({})
     };
 
-    let res = client
+    let builder = client
         .post(format!(
             "{}/v1internal:fetchAvailableModels",
             CLOUDCODE_BASE_URL
         ))
         .bearer_auth(access_token)
         .header("User-Agent", USER_AGENT)
-        .json(&payload)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<FetchAvailableModelsResponse>()
-        .await?;
-    Ok(res)
+        .json(&payload);
+
+    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
+    let res = res.error_for_status()?;
+    let parsed = res.json::<FetchAvailableModelsResponse>()?;
+    Ok(parsed)
 }
 
 pub async fn try_onboard_user(
     access_token: &str,
     tier_id: &str,
-) -> Result<Option<String>, reqwest::Error> {
+    debug: bool,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let payload = serde_json::json!({
         "tierId": tier_id,
@@ -226,15 +341,14 @@ pub async fn try_onboard_user(
         }
     });
 
-    let res = client
+    let builder = client
         .post(format!("{}/v1internal:onboardUser", CLOUDCODE_BASE_URL))
         .bearer_auth(access_token)
         .header("User-Agent", USER_AGENT)
-        .json(&payload)
-        .send()
-        .await?;
+        .json(&payload);
 
-    if !res.status().is_success() {
+    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
+    if !res.status.is_success() {
         return Ok(None);
     }
 
@@ -244,7 +358,7 @@ pub async fn try_onboard_user(
         response: Option<serde_json::Value>,
     }
 
-    if let Ok(onboard_res) = res.json::<OnboardResponse>().await {
+    if let Ok(onboard_res) = res.json::<OnboardResponse>() {
         if onboard_res.done == Some(true) {
             if let Some(resp) = onboard_res.response {
                 if let Some(proj) = resp.get("cloudaicompanionProject") {
@@ -283,6 +397,7 @@ pub fn pick_onboard_tier(
 pub async fn resolve_project_id(
     access_token: &str,
     cached_project_id: Option<&str>,
+    debug: bool,
 ) -> Option<String> {
     if let Some(p) = cached_project_id {
         if !p.is_empty() {
@@ -290,7 +405,7 @@ pub async fn resolve_project_id(
         }
     }
 
-    let load_resp = match load_code_assist(access_token).await {
+    let load_resp = match load_code_assist(access_token, debug).await {
         Ok(resp) => resp,
         Err(_) => return None,
     };
@@ -310,14 +425,14 @@ pub async fn resolve_project_id(
 
     let onboard_tier = pick_onboard_tier(&load_resp, tier_id.as_deref())?;
 
-    if let Ok(Some(proj_id)) = try_onboard_user(access_token, &onboard_tier).await {
+    if let Ok(Some(proj_id)) = try_onboard_user(access_token, &onboard_tier, debug).await {
         return Some(proj_id);
     }
 
     // Poll loadCodeAssist with retries
     for _ in 0..5 {
         tokio::time::sleep(Duration::from_millis(2000)).await;
-        if let Ok(resp) = load_code_assist(access_token).await {
+        if let Ok(resp) = load_code_assist(access_token, debug).await {
             if let Some(ref proj_val) = resp.cloudaicompanion_project {
                 if let Some(p) = extract_project_id(proj_val) {
                     return Some(p);
@@ -331,13 +446,14 @@ pub async fn resolve_project_id(
 
 pub async fn get_valid_tokens(
     tokens: &mut StoredTokens,
+    debug: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let now = chrono::Utc::now().timestamp_millis() as u64;
     // Expiry buffer is 5 minutes (300,000 ms)
     let buffer = 5 * 60 * 1000;
     if now >= tokens.expires_at - buffer {
         // Refresh token
-        let res = refresh_access_token(&tokens.refresh_token).await?;
+        let res = refresh_access_token(&tokens.refresh_token, debug).await?;
         tokens.access_token = res.access_token;
         if let Some(rt) = res.refresh_token {
             tokens.refresh_token = rt;
@@ -492,12 +608,13 @@ fn generate_uuid() -> String {
 pub async fn trigger_model(
     access_token: &str,
     options: &TriggerOptions,
+    debug: bool,
 ) -> Result<TriggerResult, Box<dyn std::error::Error>> {
     use rand::RngExt;
     let start_time = std::time::Instant::now();
 
     // 1. Warm up session
-    let _ = load_code_assist(access_token).await;
+    let _ = load_code_assist(access_token, debug).await;
 
     // 2. Build Request Body
     let request_id = generate_uuid();
@@ -540,7 +657,6 @@ pub async fn trigger_model(
         "https://daily-cloudcode-pa.sandbox.googleapis.com",
     ];
 
-    let client = reqwest::Client::new();
     let stream_path = "/v1internal:streamGenerateContent?alt=sse";
 
     let mut last_error = None;
@@ -556,78 +672,75 @@ pub async fn trigger_model(
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
 
-            match client
+            let client = reqwest::Client::new();
+            let builder = client
                 .post(&url)
                 .bearer_auth(access_token)
                 .header("User-Agent", USER_AGENT)
                 .header("Content-Type", "application/json")
                 .header("Accept-Encoding", "gzip")
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    let status = response.status();
-                    if status.is_success() {
-                        if let Ok(text) = response.text().await {
-                            // Parse SSE response
-                            let mut full_text = String::new();
-                            let mut usage = None;
+                .json(&payload);
 
-                            for line in text.lines() {
-                                if line.starts_with("data: ") {
-                                    let json_str = &line[6..];
-                                    if json_str.trim() == "[DONE]" {
-                                        continue;
-                                    }
-                                    if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
-                                        let candidates = root
-                                            .response
-                                            .as_ref()
-                                            .and_then(|r| r.candidates.as_ref())
-                                            .or(root.candidates.as_ref());
-                                        if let Some(candidates) = candidates {
-                                            for cand in candidates {
-                                                if let Some(ref content) = cand.content {
-                                                    if let Some(ref parts) = content.parts {
-                                                        for part in parts {
-                                                            if let Some(ref t) = part.text {
-                                                                full_text.push_str(t);
-                                                            }
+            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+            match execute_request(builder, Some(payload_str), debug).await {
+                Ok(res) => {
+                    let status = res.status;
+                    if status.is_success() {
+                        let text = res.text();
+                        // Parse SSE response
+                        let mut full_text = String::new();
+                        let mut usage = None;
+
+                        for line in text.lines() {
+                            if line.starts_with("data: ") {
+                                let json_str = &line[6..];
+                                if json_str.trim() == "[DONE]" {
+                                    continue;
+                                }
+                                if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
+                                    let candidates = root
+                                        .response
+                                        .as_ref()
+                                        .and_then(|r| r.candidates.as_ref())
+                                        .or(root.candidates.as_ref());
+                                    if let Some(candidates) = candidates {
+                                        for cand in candidates {
+                                            if let Some(ref content) = cand.content {
+                                                if let Some(ref parts) = content.parts {
+                                                    for part in parts {
+                                                        if let Some(ref t) = part.text {
+                                                            full_text.push_str(t);
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                        let metadata = root
-                                            .response
-                                            .as_ref()
-                                            .and_then(|r| r.usage_metadata.as_ref())
-                                            .or(root.usage_metadata.as_ref());
-                                        if let Some(m) = metadata {
-                                            usage = Some(TriggerTokenUsage {
-                                                prompt: m.prompt_token_count.unwrap_or(0),
-                                                completion: m.candidates_token_count.unwrap_or(0),
-                                                total: m.total_token_count.unwrap_or(0),
-                                            });
-                                        }
+                                    }
+                                    let metadata = root
+                                        .response
+                                        .as_ref()
+                                        .and_then(|r| r.usage_metadata.as_ref())
+                                        .or(root.usage_metadata.as_ref());
+                                    if let Some(m) = metadata {
+                                        usage = Some(TriggerTokenUsage {
+                                            prompt: m.prompt_token_count.unwrap_or(0),
+                                            completion: m.candidates_token_count.unwrap_or(0),
+                                            total: m.total_token_count.unwrap_or(0),
+                                        });
                                     }
                                 }
                             }
-
-                            return Ok(TriggerResult {
-                                success: true,
-                                duration_ms: start_time.elapsed().as_millis(),
-                                text: full_text,
-                                token_usage: usage,
-                                error: None,
-                            });
                         }
+
+                        return Ok(TriggerResult {
+                            success: true,
+                            duration_ms: start_time.elapsed().as_millis(),
+                            text: full_text,
+                            token_usage: usage,
+                            error: None,
+                        });
                     } else {
-                        let err_text = response
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "Unknown error".to_string());
+                        let err_text = res.text();
                         last_error = Some(format!("HTTP {} - {}", status, err_text));
                         if status == 429 || status.is_server_error() {
                             // Retry

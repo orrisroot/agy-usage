@@ -24,6 +24,10 @@ struct Cli {
     /// Account email to use (shortcut for quota --account)
     #[arg(short, long)]
     account: Option<String>,
+
+    /// Enable debug output (shortcut for quota --debug / wakeup --debug)
+    #[arg(long)]
+    debug: bool,
 }
 
 #[derive(Subcommand)]
@@ -71,6 +75,10 @@ enum Commands {
         /// Account email to check
         #[arg(short, long)]
         account: Option<String>,
+
+        /// Enable debug output (shows API request and response details)
+        #[arg(long)]
+        debug: bool,
     },
     /// Trigger models to start quota limitation timers / wakeup
     Wakeup {
@@ -89,6 +97,10 @@ enum Commands {
         /// Retain the original long system prompt instead of omitting it
         #[arg(long)]
         keep_system_prompt: bool,
+
+        /// Enable debug output (shows API request and response details)
+        #[arg(long)]
+        debug: bool,
     },
 }
 
@@ -258,11 +270,13 @@ async fn main() {
             all_models,
             json,
             account,
+            debug,
         }) => {
             let quota_opts = quota::QuotaOptions {
                 all_models,
                 json,
                 account,
+                debug: debug || cli.debug,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
                 eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
@@ -274,12 +288,14 @@ async fn main() {
             prompt,
             account,
             keep_system_prompt,
+            debug,
         }) => {
             let opts = wakeup::WakeupOptions {
                 models,
                 prompt,
                 account,
                 keep_system_prompt,
+                debug: debug || cli.debug,
             };
             if let Err(e) = wakeup::run_wakeup(opts).await {
                 eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
@@ -291,6 +307,7 @@ async fn main() {
                 all_models: cli.all_models,
                 json: cli.json,
                 account: cli.account,
+                debug: cli.debug,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
                 eprintln!("\x1b[31;1mError:\x1b[0m {}", e);

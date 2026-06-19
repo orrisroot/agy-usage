@@ -218,13 +218,13 @@ async fn complete_login(
     redirect_uri: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     println!("Exchanging authorization code for tokens...");
-    let token_resp = exchange_code_for_tokens(code, redirect_uri).await?;
+    let token_resp = exchange_code_for_tokens(code, redirect_uri, false).await?;
 
     println!("Retrieving user email...");
-    let email = get_user_email(&token_resp.access_token).await?;
+    let email = get_user_email(&token_resp.access_token, false).await?;
 
     println!("Resolving project ID...");
-    let project_id = resolve_project_id(&token_resp.access_token, None).await;
+    let project_id = resolve_project_id(&token_resp.access_token, None, false).await;
 
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let tokens = StoredTokens {

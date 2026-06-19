@@ -9,6 +9,7 @@ pub struct QuotaOptions {
     pub all_models: bool,
     pub json: bool,
     pub account: Option<String>,
+    pub debug: bool,
 }
 
 pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -27,25 +28,27 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
     };
 
     println!("Checking authentication status...");
-    let access_token = get_valid_tokens(&mut tokens).await?;
+    let access_token = get_valid_tokens(&mut tokens, options.debug).await?;
 
     println!("Fetching quota information from Google API...");
-    let code_assist = load_code_assist(&access_token).await?;
+    let code_assist = load_code_assist(&access_token, options.debug).await?;
 
     // Extract project ID if it changed or was resolved
-    let project_id = resolve_project_id(&access_token, tokens.project_id.as_deref()).await;
+    let project_id =
+        resolve_project_id(&access_token, tokens.project_id.as_deref(), options.debug).await;
     if project_id != tokens.project_id {
         tokens.project_id = project_id.clone();
         crate::config::save_account_tokens(&tokens.email, &tokens)?;
     }
 
-    let models_resp = match fetch_available_models(&access_token, project_id.as_deref()).await {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("Warning: Failed to fetch available models quota ({})", e);
-            None
-        }
-    };
+    let models_resp =
+        match fetch_available_models(&access_token, project_id.as_deref(), options.debug).await {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("Warning: Failed to fetch available models quota ({})", e);
+                None
+            }
+        };
 
     if options.json {
         print_json(&tokens.email, &code_assist, &models_resp);

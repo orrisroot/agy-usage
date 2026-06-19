@@ -9,6 +9,7 @@ pub struct WakeupOptions {
     pub prompt: Option<String>,
     pub account: Option<String>,
     pub keep_system_prompt: bool,
+    pub debug: bool,
 }
 
 pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -27,23 +28,25 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     };
 
     println!("Checking authentication status...");
-    let access_token = get_valid_tokens(&mut tokens).await?;
+    let access_token = get_valid_tokens(&mut tokens, options.debug).await?;
 
     // Extract project ID if it changed or was resolved
-    let project_id = resolve_project_id(&access_token, tokens.project_id.as_deref()).await;
+    let project_id =
+        resolve_project_id(&access_token, tokens.project_id.as_deref(), options.debug).await;
     if project_id != tokens.project_id {
         tokens.project_id = project_id.clone();
         crate::config::save_account_tokens(&tokens.email, &tokens)?;
     }
 
     println!("Fetching available models to verify...");
-    let models_resp = match fetch_available_models(&access_token, project_id.as_deref()).await {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("Warning: Failed to fetch available models quota ({})", e);
-            None
-        }
-    };
+    let models_resp =
+        match fetch_available_models(&access_token, project_id.as_deref(), options.debug).await {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("Warning: Failed to fetch available models quota ({})", e);
+                None
+            }
+        };
 
     // Determine target models
     let default_models = vec![
@@ -113,7 +116,7 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
             project_id: project_id.clone(),
         };
 
-        match trigger_model(&access_token, &trigger_opts).await {
+        match trigger_model(&access_token, &trigger_opts, options.debug).await {
             Ok(result) => {
                 if result.success {
                     println!("\x1b[32;1m✅ Success!\x1b[0m ({}ms)", result.duration_ms);
