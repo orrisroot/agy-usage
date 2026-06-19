@@ -232,6 +232,30 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     print_border_line('└', '┴', '┘', &widths);
 }
 
+/// Helper to format a single QuotaSummaryBucket into table row fields.
+fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Vec<String> {
+    let name = bucket
+        .display_name
+        .as_deref()
+        .or(bucket.bucket_id.as_deref())
+        .unwrap_or("Unknown Bucket");
+
+    let rem_pct = if bucket.disabled == Some(true) {
+        "\x1b[32m🟢 Unlimited\x1b[0m".to_string()
+    } else {
+        let is_exhausted = bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
+        format_remaining(bucket.remaining_fraction, is_exhausted)
+    };
+
+    let reset_in = bucket
+        .reset_time
+        .as_ref()
+        .map(|t| format_time_until_reset(t))
+        .unwrap_or_else(|| "N/A".to_string());
+
+    vec![name.to_string(), rem_pct, reset_in]
+}
+
 fn print_pretty(
     email: &str,
     code_assist: &crate::google_api::LoadCodeAssistResponse,
@@ -328,26 +352,7 @@ fn print_pretty(
         let mut quota_rows = vec![];
         if let Some(buckets) = &summary.buckets {
             for bucket in buckets {
-                let name = bucket
-                    .display_name
-                    .as_deref()
-                    .or(bucket.bucket_id.as_deref())
-                    .unwrap_or("Unknown Bucket");
-
-                let rem_pct = if bucket.disabled == Some(true) {
-                    "\x1b[32m🟢 Unlimited\x1b[0m".to_string()
-                } else {
-                    let is_exhausted = bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
-                    format_remaining(bucket.remaining_fraction, is_exhausted)
-                };
-
-                let reset_in = bucket
-                    .reset_time
-                    .as_ref()
-                    .map(|t| format_time_until_reset(t))
-                    .unwrap_or_else(|| "N/A".to_string());
-
-                quota_rows.push(vec![name.to_string(), rem_pct, reset_in]);
+                quota_rows.push(format_quota_bucket_row(bucket));
             }
         }
 
@@ -380,27 +385,7 @@ fn print_pretty(
                 let mut group_rows = vec![];
                 if let Some(buckets) = &group.buckets {
                     for bucket in buckets {
-                        let name = bucket
-                            .display_name
-                            .as_deref()
-                            .or(bucket.bucket_id.as_deref())
-                            .unwrap_or("Unknown Bucket");
-
-                        let rem_pct = if bucket.disabled == Some(true) {
-                            "\x1b[32m🟢 Unlimited\x1b[0m".to_string()
-                        } else {
-                            let is_exhausted =
-                                bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
-                            format_remaining(bucket.remaining_fraction, is_exhausted)
-                        };
-
-                        let reset_in = bucket
-                            .reset_time
-                            .as_ref()
-                            .map(|t| format_time_until_reset(t))
-                            .unwrap_or_else(|| "N/A".to_string());
-
-                        group_rows.push(vec![name.to_string(), rem_pct, reset_in]);
+                        group_rows.push(format_quota_bucket_row(bucket));
                     }
                 }
 
