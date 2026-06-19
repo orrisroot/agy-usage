@@ -50,12 +50,6 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
         }
     };
 
-    // Save tokens if they were refreshed or project ID was updated/resolved
-    if api_client.is_dirty() {
-        let updated_tokens = api_client.tokens();
-        crate::config::save_account_tokens(&updated_tokens.email, updated_tokens)?;
-    }
-
     if options.json {
         print_json(
             &api_client.tokens().email,

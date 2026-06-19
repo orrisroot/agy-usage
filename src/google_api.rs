@@ -162,7 +162,8 @@ impl ApiResponse {
     }
 }
 
-pub async fn execute_request(
+async fn execute_request_internal(
+    client: &reqwest::Client,
     builder: reqwest::RequestBuilder,
     body_for_log: Option<String>,
     debug: bool,
@@ -195,26 +196,17 @@ pub async fn execute_request(
             }
         }
         if let Some(body) = body_for_log {
-            let mut sanitized = body;
-            if sanitized.contains(OAUTH_CLIENT_SECRET) {
-                sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
-            }
-            eprintln!("Body: {}", sanitized);
+            eprintln!("Body: {}", sanitize_body(&body));
         } else if let Some(body) = request.body() {
             if let Some(bytes) = body.as_bytes() {
                 if let Ok(s) = std::str::from_utf8(bytes) {
-                    let mut sanitized = s.to_string();
-                    if sanitized.contains(OAUTH_CLIENT_SECRET) {
-                        sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
-                    }
-                    eprintln!("Body: {}", sanitized);
+                    eprintln!("Body: {}", sanitize_body(s));
                 }
             }
         }
         eprintln!("\x1b[33;1m-------------------\x1b[0m");
     }
 
-    let client = reqwest::Client::new();
     let response = client.execute(request).await?;
 
     let status = response.status();
@@ -230,7 +222,7 @@ pub async fn execute_request(
             eprintln!("  {}: {:?}", name, value);
         }
         if let Ok(s) = std::str::from_utf8(&body) {
-            eprintln!("Body: {}", s);
+            eprintln!("Body: {}", sanitize_body(s));
         } else {
             eprintln!("Body: <binary/non-utf8>");
         }
@@ -242,6 +234,15 @@ pub async fn execute_request(
         headers,
         body,
     })
+}
+
+pub async fn execute_request(
+    builder: reqwest::RequestBuilder,
+    body_for_log: Option<String>,
+    debug: bool,
+) -> Result<ApiResponse, reqwest::Error> {
+    let client = reqwest::Client::new();
+    execute_request_internal(&client, builder, body_for_log, debug).await
 }
 
 pub async fn exchange_code_for_tokens(
@@ -336,7 +337,6 @@ pub struct ApiClient {
     client: reqwest::Client,
     tokens: StoredTokens,
     debug: bool,
-    dirty: bool,
 }
 
 impl ApiClient {
@@ -345,16 +345,11 @@ impl ApiClient {
             client: reqwest::Client::new(),
             tokens,
             debug,
-            dirty: false,
         }
     }
 
     pub fn tokens(&self) -> &StoredTokens {
         &self.tokens
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
     }
 
     pub async fn ensure_valid_token(&mut self) -> Result<String, Box<dyn std::error::Error>> {
@@ -369,7 +364,7 @@ impl ApiClient {
                 self.tokens.refresh_token = rt;
             }
             self.tokens.expires_at = now + res.expires_in * 1000;
-            self.dirty = true;
+            crate::config::save_account_tokens(&self.tokens.email, &self.tokens)?;
         }
         Ok(self.tokens.access_token.clone())
     }
@@ -379,80 +374,7 @@ impl ApiClient {
         builder: reqwest::RequestBuilder,
         body_for_log: Option<String>,
     ) -> Result<ApiResponse, reqwest::Error> {
-        let request = builder.build()?;
-        if self.debug {
-            eprintln!("\n\x1b[33;1m--- API Request ---\x1b[0m");
-            eprintln!("Method: {}", request.method());
-            eprintln!("URL: {}", request.url());
-            eprintln!("Headers:");
-            for (name, value) in request.headers() {
-                if name == reqwest::header::AUTHORIZATION {
-                    if let Ok(val_str) = value.to_str() {
-                        if val_str.starts_with("Bearer ") {
-                            let token = &val_str[7..];
-                            let masked = if token.len() > 12 {
-                                format!("Bearer {}...{}", &token[..6], &token[token.len() - 6..])
-                            } else {
-                                "Bearer ***".to_string()
-                            };
-                            eprintln!("  {}: {}", name, masked);
-                        } else {
-                            eprintln!("  {}: ***", name);
-                        }
-                    } else {
-                        eprintln!("  {}: ***", name);
-                    }
-                } else {
-                    eprintln!("  {}: {:?}", name, value);
-                }
-            }
-            if let Some(body) = body_for_log {
-                let mut sanitized = body;
-                if sanitized.contains(OAUTH_CLIENT_SECRET) {
-                    sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
-                }
-                eprintln!("Body: {}", sanitized);
-            } else if let Some(body) = request.body() {
-                if let Some(bytes) = body.as_bytes() {
-                    if let Ok(s) = std::str::from_utf8(bytes) {
-                        let mut sanitized = s.to_string();
-                        if sanitized.contains(OAUTH_CLIENT_SECRET) {
-                            sanitized = sanitized.replace(OAUTH_CLIENT_SECRET, "GOCSPX-***");
-                        }
-                        eprintln!("Body: {}", sanitized);
-                    }
-                }
-            }
-            eprintln!("\x1b[33;1m-------------------\x1b[0m");
-        }
-
-        let response = self.client.execute(request).await?;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body_bytes = response.bytes().await?;
-        let body = body_bytes.to_vec();
-
-        if self.debug {
-            eprintln!("\n\x1b[32;1m--- API Response ---\x1b[0m");
-            eprintln!("Status: {}", status);
-            eprintln!("Headers:");
-            for (name, value) in &headers {
-                eprintln!("  {}: {:?}", name, value);
-            }
-            if let Ok(s) = std::str::from_utf8(&body) {
-                eprintln!("Body: {}", s);
-            } else {
-                eprintln!("Body: <binary/non-utf8>");
-            }
-            eprintln!("\x1b[32;1m--------------------\x1b[0m");
-        }
-
-        Ok(ApiResponse {
-            status,
-            headers,
-            body,
-        })
+        execute_request_internal(&self.client, builder, body_for_log, self.debug).await
     }
 
     pub async fn load_code_assist(
@@ -599,7 +521,7 @@ impl ApiClient {
         if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
             if let Some(p) = extract_project_id(proj_val) {
                 self.tokens.project_id = Some(p.clone());
-                self.dirty = true;
+                let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
                 return Some(p);
             }
         }
@@ -615,7 +537,7 @@ impl ApiClient {
 
         if let Ok(Some(proj_id)) = self.try_onboard_user(&onboard_tier).await {
             self.tokens.project_id = Some(proj_id.clone());
-            self.dirty = true;
+            let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
             return Some(proj_id);
         }
 
@@ -626,7 +548,8 @@ impl ApiClient {
                 if let Some(ref proj_val) = resp.cloudaicompanion_project {
                     if let Some(p) = extract_project_id(proj_val) {
                         self.tokens.project_id = Some(p.clone());
-                        self.dirty = true;
+                        let _ =
+                            crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
                         return Some(p);
                     }
                 }
@@ -937,4 +860,100 @@ fn generate_uuid() -> String {
         bytes[14],
         bytes[15]
     )
+}
+
+pub fn sanitize_body(body: &str) -> String {
+    // Try parsing as JSON first
+    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(body) {
+        sanitize_json_value(&mut val);
+        return serde_json::to_string(&val).unwrap_or_else(|_| body.to_string());
+    }
+
+    // Try parsing as form urlencoded
+    if body.contains('=') && !body.contains('{') && !body.contains('[') {
+        let mut params = Vec::new();
+        let mut modified = false;
+        for (k, v) in url::form_urlencoded::parse(body.as_bytes()) {
+            if k == "access_token" || k == "refresh_token" || k == "client_secret" || k == "code" {
+                params.push((k.into_owned(), "***".to_string()));
+                modified = true;
+            } else {
+                params.push((k.into_owned(), v.into_owned()));
+            }
+        }
+        if modified {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for (k, v) in params {
+                serializer.append_pair(&k, &v);
+            }
+            return serializer.finish();
+        }
+    }
+
+    body.to_string()
+}
+
+fn sanitize_json_value(val: &mut serde_json::Value) {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let is_sensitive = k == "access_token"
+                    || k == "accessToken"
+                    || k == "refresh_token"
+                    || k == "refreshToken"
+                    || k == "client_secret"
+                    || k == "clientSecret"
+                    || k == "code";
+                if is_sensitive {
+                    *v = serde_json::Value::String("***".to_string());
+                } else {
+                    sanitize_json_value(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                sanitize_json_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_json() {
+        let input = r#"{"access_token":"secret123","refresh_token":"ref456","other":"public"}"#;
+        let sanitized = sanitize_body(input);
+        let parsed: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(parsed["access_token"], "***");
+        assert_eq!(parsed["refresh_token"], "***");
+        assert_eq!(parsed["other"], "public");
+    }
+
+    #[test]
+    fn test_sanitize_nested_json() {
+        let input = r#"{"nested":{"accessToken":"secret123"},"list":[{"code":"mycode"}]}"#;
+        let sanitized = sanitize_body(input);
+        let parsed: serde_json::Value = serde_json::from_str(&sanitized).unwrap();
+        assert_eq!(parsed["nested"]["accessToken"], "***");
+        assert_eq!(parsed["list"][0]["code"], "***");
+    }
+
+    #[test]
+    fn test_sanitize_form_urlencoded() {
+        let input = "code=mycode&client_id=123&client_secret=secret&other=val";
+        let sanitized = sanitize_body(input);
+        let params: std::collections::HashMap<String, String> =
+            url::form_urlencoded::parse(sanitized.as_bytes())
+                .into_owned()
+                .collect();
+        assert_eq!(params.get("code").unwrap(), "***");
+        assert_eq!(params.get("client_id").unwrap(), "123");
+        assert_eq!(params.get("client_secret").unwrap(), "***");
+        assert_eq!(params.get("other").unwrap(), "val");
+    }
 }

@@ -124,12 +124,6 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
         }
     }
 
-    // Save tokens if they were refreshed or project ID was updated/resolved
-    if api_client.is_dirty() {
-        let updated_tokens = api_client.tokens();
-        crate::config::save_account_tokens(&updated_tokens.email, updated_tokens)?;
-    }
-
     println!("\n✨ Wakeup/Trigger cycle complete.");
     Ok(())
 }
