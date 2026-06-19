@@ -68,19 +68,11 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     let mut validated_models = Vec::new();
     for model in target_models {
         if !available_model_ids.is_empty() && !available_model_ids.contains(&model) {
-            println!(
-                "\x1b[33mWarning:\x1b[0m Model \"{}\" was not found in the available models list.",
+            return Err(format!(
+                "Model \"{}\" was not found in the available models list.",
                 model
-            );
-            println!("Do you still want to proceed triggering it? [y/N]");
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            let input = input.trim().to_lowercase();
-            if input == "y" || input == "yes" {
-                validated_models.push(model);
-            } else {
-                println!("Skipping model \"{}\".", model);
-            }
+            )
+            .into());
         } else {
             validated_models.push(model);
         }
