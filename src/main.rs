@@ -102,6 +102,8 @@ enum Commands {
         #[arg(long)]
         debug: bool,
     },
+    /// Update the CLI to the latest version
+    SelfUpdate,
 }
 
 #[derive(Subcommand)]
@@ -302,6 +304,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::SelfUpdate) => {
+            if let Err(e) = run_self_update() {
+                eprintln!("\x1b[31;1mError:\x1b[0m Self-update failed: {}", e);
+                std::process::exit(1);
+            }
+        }
         None => {
             let quota_opts = quota::QuotaOptions {
                 all_models: cli.all_models,
@@ -315,4 +323,26 @@ async fn main() {
             }
         }
     }
+}
+
+fn run_self_update() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Checking for updates...");
+    let status = self_update::backends::github::Update::configure()
+        .repo_owner("orrisroot")
+        .repo_name("agy-usage")
+        .bin_name("agy-usage")
+        .show_download_progress(true)
+        .current_version(self_update::cargo_crate_version!())
+        .build()?
+        .update()?;
+
+    if status.updated() {
+        println!(
+            "\x1b[32;1mSuccess:\x1b[0m Updated to version {}!",
+            status.version()
+        );
+    } else {
+        println!("Already up to date (version {}).", status.version());
+    }
+    Ok(())
 }
