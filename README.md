@@ -190,7 +190,17 @@ Or you can create the task via the GUI **Task Scheduler**:
 2. Set the Trigger to **Daily**, and under Advanced Settings set **Repeat task every** to **1 hour**.
 3. Set the Action to **Start a program**, browse to `agy-usage.exe`, and add `wakeup` in the arguments.
 
-### 6. Logging Out
+### 6. Self-Update
+
+To update the CLI tool to the latest version directly from GitHub releases:
+
+```bash
+agy-usage self-update
+```
+
+This command automatically checks for new releases on GitHub, downloads the correct binary for your operating system and architecture, and replaces the running executable in-place.
+
+### 7. Logging Out
 
 Log out from one or all accounts.
 
@@ -201,6 +211,7 @@ agy-usage logout user@example.com
 # Log out from all accounts
 agy-usage logout --all
 ```
+
 
 ## License
 
