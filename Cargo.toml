@@ -18,5 +18,5 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "6.0"
 rand = "0.10"
 unicode-width = "0.2"
-self_update = { version = "0.41", features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
+self_update = { version = "0.41", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
 
