@@ -49,6 +49,39 @@ pub struct FetchAvailableModelsResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QuotaSummaryBucket {
+    #[serde(rename = "bucketId")]
+    pub bucket_id: Option<String>,
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub window: Option<String>,
+    pub remaining: Option<i64>,
+    #[serde(rename = "remainingFraction")]
+    pub remaining_fraction: Option<f64>,
+    #[serde(rename = "remainingAmount")]
+    pub remaining_amount: Option<f64>,
+    pub disabled: Option<bool>,
+    #[serde(rename = "resetTime")]
+    pub reset_time: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QuotaSummaryGroup {
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    pub buckets: Option<Vec<QuotaSummaryBucket>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RetrieveUserQuotaSummaryResponse {
+    pub buckets: Option<Vec<QuotaSummaryBucket>>,
+    pub groups: Option<Vec<QuotaSummaryGroup>>,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PlanInfo {
     #[serde(rename = "monthlyPromptCredits")]
     pub monthly_prompt_credits: Option<u64>,
@@ -323,6 +356,33 @@ pub async fn fetch_available_models(
     let res = execute_request(builder, Some(payload.to_string()), debug).await?;
     let res = res.error_for_status()?;
     let parsed = res.json::<FetchAvailableModelsResponse>()?;
+    Ok(parsed)
+}
+
+pub async fn retrieve_user_quota_summary(
+    access_token: &str,
+    project_id: Option<&str>,
+    debug: bool,
+) -> Result<RetrieveUserQuotaSummaryResponse, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let payload = if let Some(proj) = project_id {
+        serde_json::json!({ "project": proj })
+    } else {
+        serde_json::json!({})
+    };
+
+    let builder = client
+        .post(format!(
+            "{}/v1internal:retrieveUserQuotaSummary",
+            CLOUDCODE_BASE_URL
+        ))
+        .bearer_auth(access_token)
+        .header("User-Agent", USER_AGENT)
+        .json(&payload);
+
+    let res = execute_request(builder, Some(payload.to_string()), debug).await?;
+    let res = res.error_for_status()?;
+    let parsed = res.json::<RetrieveUserQuotaSummaryResponse>()?;
     Ok(parsed)
 }
 
