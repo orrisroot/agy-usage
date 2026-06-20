@@ -130,7 +130,7 @@ fn format_remaining(fraction: Option<f64>, is_exhausted: bool) -> String {
     }
     match fraction {
         Some(f) => {
-            let pct = (f * 100.0).round() as i32;
+            let pct = (f * 100.0).floor() as i32;
             if pct >= 75 {
                 format!("\x1b[32m🟢 {}%\x1b[0m", pct)
             } else if pct >= 50 {
@@ -241,6 +241,45 @@ fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Ve
     vec![name.to_string(), rem_pct, reset_in]
 }
 
+fn get_effective_remaining_fraction(
+    model_display_name: &str,
+    model_fraction: Option<f64>,
+    summary: &Option<RetrieveUserQuotaSummaryResponse>,
+) -> Option<f64> {
+    let mut effective = model_fraction;
+
+    if let Some(summ) = summary {
+        if let Some(groups) = &summ.groups {
+            for group in groups {
+                let desc = group.description.as_deref().unwrap_or("");
+                if desc.starts_with("Models within this group: ") {
+                    let models_str = &desc["Models within this group: ".len()..];
+                    let matches_group = models_str.split(", ").any(|g| {
+                        g.split_whitespace()
+                            .all(|word| model_display_name.contains(word))
+                    });
+                    if matches_group {
+                        if let Some(buckets) = &group.buckets {
+                            for bucket in buckets {
+                                if let Some(bf) = bucket.remaining_fraction {
+                                    if let Some(ef) = effective {
+                                        if bf < ef {
+                                            effective = Some(bf);
+                                        }
+                                    } else {
+                                        effective = Some(bf);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    effective
+}
+
 fn print_pretty(
     email: &str,
     code_assist: &crate::google_api::LoadCodeAssistResponse,
@@ -309,10 +348,13 @@ fn print_pretty(
                     }
 
                     let quota = info.quota_info.as_ref().unwrap();
-                    let rem_pct = format_remaining(
+                    let effective_frac = get_effective_remaining_fraction(
+                        &name,
                         quota.remaining_fraction,
-                        quota.is_exhausted.unwrap_or(false),
+                        quota_summary_resp,
                     );
+                    let rem_pct =
+                        format_remaining(effective_frac, quota.is_exhausted.unwrap_or(false));
                     let reset_in = quota
                         .reset_time
                         .as_ref()

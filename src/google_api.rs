@@ -507,33 +507,35 @@ impl ApiClient {
     }
 
     pub async fn resolve_project_id(&mut self) -> Option<String> {
-        if let Some(ref p) = self.tokens.project_id {
-            if !p.is_empty() {
-                return Some(p.clone());
-            }
-        }
+        let cached_p = self.tokens.project_id.clone();
 
         let load_resp = match self.load_code_assist().await {
             Ok(resp) => resp,
             Err(_) => return None,
         };
 
-        if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
-            if let Some(p) = extract_project_id(proj_val) {
-                self.tokens.project_id = Some(p.clone());
-                let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
-                return Some(p);
-            }
-        }
-
-        // Attempt onboarding
-        let tier_id = load_resp
+        let target_tier_id = load_resp
             .paid_tier
             .as_ref()
             .and_then(|t| t.id.clone())
             .or_else(|| load_resp.current_tier.as_ref().and_then(|t| t.id.clone()));
 
-        let onboard_tier = pick_onboard_tier(&load_resp, tier_id.as_deref())?;
+        let current_tier_id = load_resp.current_tier.as_ref().and_then(|t| t.id.clone());
+
+        if target_tier_id == current_tier_id {
+            if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
+                if let Some(p) = extract_project_id(proj_val) {
+                    if Some(&p) != cached_p.as_ref() {
+                        self.tokens.project_id = Some(p.clone());
+                        let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
+                    }
+                    return Some(p);
+                }
+            }
+        }
+
+        // Attempt onboarding
+        let onboard_tier = pick_onboard_tier(&load_resp, target_tier_id.as_deref())?;
 
         if let Ok(Some(proj_id)) = self.try_onboard_user(&onboard_tier).await {
             self.tokens.project_id = Some(proj_id.clone());
