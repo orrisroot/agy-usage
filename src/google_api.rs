@@ -527,7 +527,8 @@ impl ApiClient {
                 if let Some(p) = extract_project_id(proj_val) {
                     if Some(&p) != cached_p.as_ref() {
                         self.tokens.project_id = Some(p.clone());
-                        let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
+                        let _ =
+                            crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
                     }
                     return Some(p);
                 }
