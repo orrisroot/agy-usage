@@ -9,7 +9,7 @@ pub const OAUTH_CLIENT_SECRET: &str = "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";
 pub const OAUTH_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
-pub const CLOUDCODE_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+pub const CLOUDCODE_BASE_URL: &str = "https://daily-cloudcode-pa.googleapis.com";
 pub const USER_AGENT: &str = "antigravity";
 
 #[derive(Deserialize, Debug)]
