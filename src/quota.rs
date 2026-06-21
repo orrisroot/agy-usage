@@ -80,8 +80,10 @@ fn format_reset_time(reset_time_str: &str) -> String {
             return format!("{} - Resets soon", reset_at);
         }
 
-        let hours = sec / 3600;
-        let mins = (sec % 3600) / 60;
+        let total_mins = (sec + 59) / 60;
+        let hours = total_mins / 60;
+        let mins = total_mins % 60;
+
         let duration = if hours >= 24 {
             let days = hours / 24;
             let hours = hours % 24;
@@ -527,47 +529,47 @@ mod tests {
             format!("{} - Resets soon", local_fmt(past))
         );
 
-        // 2. Under a minute -> 0m
+        // 2. Under a minute -> 1m
         let seconds_30 = now + Duration::seconds(30);
         assert_eq!(
             format_reset_time(&seconds_30.to_rfc3339()),
-            format!("{} - 0m", local_fmt(seconds_30))
+            format!("{} - 1m", local_fmt(seconds_30))
         );
 
-        // 3. 2 minutes
-        let mins_2 = now + Duration::seconds(125);
+        // 3. 2 minutes 5 seconds -> 3m
+        let mins_2_sec_5 = now + Duration::seconds(125);
         assert_eq!(
-            format_reset_time(&mins_2.to_rfc3339()),
-            format!("{} - 2m", local_fmt(mins_2))
+            format_reset_time(&mins_2_sec_5.to_rfc3339()),
+            format!("{} - 3m", local_fmt(mins_2_sec_5))
         );
 
-        // 4. 1h 1m
+        // 4. 1h 1m 5s -> 1h 2m
         let hours_1_mins_1 = now + Duration::hours(1) + Duration::minutes(1) + Duration::seconds(5);
         assert_eq!(
             format_reset_time(&hours_1_mins_1.to_rfc3339()),
-            format!("{} - 1h 1m", local_fmt(hours_1_mins_1))
+            format!("{} - 1h 2m", local_fmt(hours_1_mins_1))
         );
 
-        // 5. 24h (1d 0h 0m)
-        let hours_24 = now + Duration::hours(24) + Duration::seconds(5);
+        // 5. 24h exactly -> 1d 0h 0m
+        let hours_24 = now + Duration::hours(24);
         assert_eq!(
             format_reset_time(&hours_24.to_rfc3339()),
             format!("{} - 1d 0h 0m", local_fmt(hours_24))
         );
 
-        // 6. 25h 1m (1d 1h 1m)
+        // 6. 25h 1m 5s -> 1d 1h 2m
         let hours_25_mins_1 =
             now + Duration::hours(25) + Duration::minutes(1) + Duration::seconds(5);
         assert_eq!(
             format_reset_time(&hours_25_mins_1.to_rfc3339()),
-            format!("{} - 1d 1h 1m", local_fmt(hours_25_mins_1))
+            format!("{} - 1d 1h 2m", local_fmt(hours_25_mins_1))
         );
 
-        // 7. 49h (2d 1h 0m)
+        // 7. 49h 5s -> 2d 1h 1m
         let hours_49 = now + Duration::hours(49) + Duration::seconds(5);
         assert_eq!(
             format_reset_time(&hours_49.to_rfc3339()),
-            format!("{} - 2d 1h 0m", local_fmt(hours_49))
+            format!("{} - 2d 1h 1m", local_fmt(hours_49))
         );
     }
 }
