@@ -1,7 +1,11 @@
 use crate::config::get_active_account_tokens;
 use crate::google_api::{ApiClient, TriggerOptions};
-use std::collections::HashSet;
+use std::collections::HashMap;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WakeupCache {
+    pub history: HashMap<String, u64>,
+}
 pub struct WakeupOptions {
     pub models: Option<Vec<String>>,
     pub prompt: Option<String>,
@@ -31,44 +35,12 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     // Resolve project ID (automatically handles onboarding & dirty state if needed)
     let project_id = api_client.resolve_project_id().await;
 
-    println!("Fetching available models to verify...");
-    let models_resp = match api_client.fetch_available_models().await {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("Warning: Failed to fetch available models quota ({})", e);
-            None
-        }
-    };
-
     // Determine target models
     let default_models = vec![
         "gpt-oss-120b-medium".to_string(),
         "gemini-3.5-flash-extra-low".to_string(),
     ];
-    let target_models = options.models.unwrap_or(default_models);
-
-    // Verify models if possible
-    let mut available_model_ids = HashSet::new();
-    if let Some(ref resp) = models_resp {
-        if let Some(ref models_map) = resp.models {
-            for k in models_map.keys() {
-                available_model_ids.insert(k.clone());
-            }
-        }
-    }
-
-    let mut validated_models = Vec::new();
-    for model in target_models {
-        if !available_model_ids.is_empty() && !available_model_ids.contains(&model) {
-            return Err(format!(
-                "Model \"{}\" was not found in the available models list.",
-                model
-            )
-            .into());
-        } else {
-            validated_models.push(model);
-        }
-    }
+    let validated_models = options.models.unwrap_or(default_models);
 
     if validated_models.is_empty() {
         println!("No models to trigger.");
@@ -77,6 +49,15 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
 
     // Default trigger prompt is a single character for extreme token saving
     let trigger_prompt = options.prompt.unwrap_or_else(|| ".".to_string());
+
+    let cache_path = crate::config::get_account_dir(&api_client.tokens().email).join("wakeup_cache.json");
+    let mut wakeup_cache = if let Ok(content) = std::fs::read_to_string(&cache_path) {
+        serde_json::from_str::<WakeupCache>(&content).unwrap_or_else(|_| WakeupCache { history: HashMap::new() })
+    } else {
+        WakeupCache { history: HashMap::new() }
+    };
+    let now = chrono::Utc::now().timestamp_millis() as u64;
+    let skip_ttl = 5 * 60 * 1000; // 5 minutes
 
     println!(
         "\n🚀 Triggering {} models (extreme token saving: prompt=\"{}\", max_tokens=1, system_prompt={})...",
@@ -91,6 +72,13 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
 
     for model_id in validated_models {
         println!("\n⏳ Triggering {}...", model_id);
+
+        if let Some(&last_time) = wakeup_cache.history.get(&model_id) {
+            if now < last_time + skip_ttl {
+                println!("\x1b[33m⏭️  Skipped\x1b[0m (already triggered recently)");
+                continue;
+            }
+        }
 
         let trigger_opts = TriggerOptions {
             model: model_id.clone(),
@@ -113,6 +101,7 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
                             usage.prompt, usage.completion, usage.total
                         );
                     }
+                    wakeup_cache.history.insert(model_id.clone(), chrono::Utc::now().timestamp_millis() as u64);
                 } else {
                     let err = result.error.unwrap_or_else(|| "Unknown error".to_string());
                     println!("\x1b[31;1m❌ Failed:\x1b[0m {}", err);
@@ -121,6 +110,12 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
             Err(e) => {
                 println!("\x1b[31;1m❌ Error:\x1b[0m {}", e);
             }
+        }
+    }
+
+    if let Ok(content) = serde_json::to_string_pretty(&wakeup_cache) {
+        if let Err(e) = std::fs::write(&cache_path, content) {
+            eprintln!("Warning: Failed to write wakeup cache: {}", e);
         }
     }
 

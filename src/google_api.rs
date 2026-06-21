@@ -1,6 +1,5 @@
 use crate::config::StoredTokens;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::Duration;
 
 pub const OAUTH_CLIENT_ID: &str =
@@ -24,29 +23,6 @@ pub struct UserInfoResponse {
     pub email: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ModelQuotaInfo {
-    #[serde(rename = "remainingFraction")]
-    pub remaining_fraction: Option<f64>,
-    #[serde(rename = "resetTime")]
-    pub reset_time: Option<String>,
-    #[serde(rename = "isExhausted")]
-    pub is_exhausted: Option<bool>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ModelInfo {
-    #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
-    pub label: Option<String>,
-    #[serde(rename = "quotaInfo")]
-    pub quota_info: Option<ModelQuotaInfo>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct FetchAvailableModelsResponse {
-    pub models: Option<HashMap<String, ModelInfo>>,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QuotaSummaryBucket {
@@ -120,6 +96,12 @@ pub struct LoadCodeAssistResponse {
     pub paid_tier: Option<PaidTier>,
     #[serde(rename = "currentTier")]
     pub current_tier: Option<CurrentTier>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CachedCodeAssist {
+    pub response: LoadCodeAssistResponse,
+    pub fetched_at: u64,
 }
 
 pub fn extract_project_id(val: &serde_json::Value) -> Option<String> {
@@ -380,6 +362,18 @@ impl ApiClient {
     pub async fn load_code_assist(
         &mut self,
     ) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
+        let cache_path = crate::config::get_account_dir(&self.tokens.email).join("code_assist_cache.json");
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let cache_ttl = 5 * 60 * 1000; // 5 minutes
+
+        if let Ok(content) = std::fs::read_to_string(&cache_path) {
+            if let Ok(cached) = serde_json::from_str::<CachedCodeAssist>(&content) {
+                if now < cached.fetched_at + cache_ttl {
+                    return Ok(cached.response);
+                }
+            }
+        }
+
         let access_token = self.ensure_valid_token().await?;
         let payload = serde_json::json!({
             "metadata": {
@@ -401,36 +395,21 @@ impl ApiClient {
             .await?;
         let res = res.error_for_status()?;
         let parsed = res.json::<LoadCodeAssistResponse>()?;
-        Ok(parsed)
-    }
 
-    pub async fn fetch_available_models(
-        &mut self,
-    ) -> Result<FetchAvailableModelsResponse, Box<dyn std::error::Error>> {
-        let access_token = self.ensure_valid_token().await?;
-        let payload = if let Some(ref proj) = self.tokens.project_id {
-            serde_json::json!({ "project": proj })
-        } else {
-            serde_json::json!({})
+        // Save to cache
+        let cached = CachedCodeAssist {
+            response: parsed.clone(),
+            fetched_at: now,
         };
+        if let Ok(content) = serde_json::to_string(&cached) {
+            if let Err(e) = std::fs::write(&cache_path, content) {
+                eprintln!("Warning: Failed to write code assist cache: {}", e);
+            }
+        }
 
-        let client = self.client.clone();
-        let builder = client
-            .post(format!(
-                "{}/v1internal:fetchAvailableModels",
-                CLOUDCODE_BASE_URL
-            ))
-            .bearer_auth(access_token)
-            .header("User-Agent", USER_AGENT)
-            .json(&payload);
-
-        let res = self
-            .execute_request(builder, Some(payload.to_string()))
-            .await?;
-        let res = res.error_for_status()?;
-        let parsed = res.json::<FetchAvailableModelsResponse>()?;
         Ok(parsed)
     }
+
 
     pub async fn retrieve_user_quota_summary(
         &mut self,

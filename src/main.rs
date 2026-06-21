@@ -13,10 +13,6 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Include autocomplete models (Gemini 2.5) in quota display (shortcut for quota --all-models)
-    #[arg(long)]
-    all_models: bool,
-
     /// Output as JSON (shortcut for quota --json)
     #[arg(long)]
     json: bool,
@@ -64,10 +60,6 @@ enum Commands {
     },
     /// Fetch and display quota information
     Quota {
-        /// Include autocomplete models (Gemini 2.5) in quota display
-        #[arg(long)]
-        all_models: bool,
-
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -269,13 +261,11 @@ async fn main() {
             }
         }
         Some(Commands::Quota {
-            all_models,
             json,
             account,
             debug,
         }) => {
             let quota_opts = quota::QuotaOptions {
-                all_models,
                 json,
                 account,
                 debug: debug || cli.debug,
@@ -312,7 +302,6 @@ async fn main() {
         }
         None => {
             let quota_opts = quota::QuotaOptions {
-                all_models: cli.all_models,
                 json: cli.json,
                 account: cli.account,
                 debug: cli.debug,

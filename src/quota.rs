@@ -1,10 +1,9 @@
 use crate::config::get_active_account_tokens;
-use crate::google_api::{ApiClient, ModelInfo, RetrieveUserQuotaSummaryResponse};
+use crate::google_api::{ApiClient, RetrieveUserQuotaSummaryResponse};
 use chrono::{DateTime, Utc};
 use unicode_width::UnicodeWidthStr;
 
 pub struct QuotaOptions {
-    pub all_models: bool,
     pub json: bool,
     pub account: Option<String>,
     pub debug: bool,
@@ -34,14 +33,6 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
     // Resolve project ID (automatically handles onboarding & dirty state if needed)
     let _project_id = api_client.resolve_project_id().await;
 
-    let models_resp = match api_client.fetch_available_models().await {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("Warning: Failed to fetch available models quota ({})", e);
-            None
-        }
-    };
-
     let quota_summary_resp = match api_client.retrieve_user_quota_summary().await {
         Ok(qs) => Some(qs),
         Err(e) => {
@@ -54,52 +45,20 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
         print_json(
             &api_client.tokens().email,
             &code_assist,
-            &models_resp,
             &quota_summary_resp,
         );
     } else {
         print_pretty(
             &api_client.tokens().email,
             &code_assist,
-            &models_resp,
             &quota_summary_resp,
-            options.all_models,
         );
     }
 
     Ok(())
 }
 
-fn should_show_model(model_id: &str, model: &ModelInfo, all_models: bool) -> bool {
-    if model_id.starts_with("chat_") || model_id.starts_with("tab_") {
-        return false;
-    }
-    if model_id.contains("image") {
-        return false;
-    }
-    if model_id.starts_with("rev") {
-        return false;
-    }
-    if model_id.contains("mquery") || model_id.contains("lite") {
-        return false;
-    }
-    if model.quota_info.is_none() {
-        return false;
-    }
 
-    let is_autocomplete = model_id.contains("gemini-2.5")
-        || model
-            .display_name
-            .as_ref()
-            .map(|n| n.contains("Gemini 2.5"))
-            .unwrap_or(false);
-
-    if !all_models && is_autocomplete {
-        return false;
-    }
-
-    true
-}
 
 fn format_time_until_reset(reset_time_str: &str) -> String {
     if let Ok(dt) = DateTime::parse_from_rfc3339(reset_time_str) {
@@ -241,51 +200,12 @@ fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Ve
     vec![name.to_string(), rem_pct, reset_in]
 }
 
-fn get_effective_remaining_fraction(
-    model_display_name: &str,
-    model_fraction: Option<f64>,
-    summary: &Option<RetrieveUserQuotaSummaryResponse>,
-) -> Option<f64> {
-    let mut effective = model_fraction;
 
-    if let Some(summ) = summary {
-        if let Some(groups) = &summ.groups {
-            for group in groups {
-                let desc = group.description.as_deref().unwrap_or("");
-                if desc.starts_with("Models within this group: ") {
-                    let models_str = &desc["Models within this group: ".len()..];
-                    let matches_group = models_str.split(", ").any(|g| {
-                        g.split_whitespace()
-                            .all(|word| model_display_name.contains(word))
-                    });
-                    if matches_group {
-                        if let Some(buckets) = &group.buckets {
-                            for bucket in buckets {
-                                if let Some(bf) = bucket.remaining_fraction {
-                                    if let Some(ef) = effective {
-                                        if bf < ef {
-                                            effective = Some(bf);
-                                        }
-                                    } else {
-                                        effective = Some(bf);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    effective
-}
 
 fn print_pretty(
     email: &str,
     code_assist: &crate::google_api::LoadCodeAssistResponse,
-    models_resp: &Option<crate::google_api::FetchAvailableModelsResponse>,
     quota_summary_resp: &Option<RetrieveUserQuotaSummaryResponse>,
-    all_models: bool,
 ) {
     let now_str = Utc::now()
         .with_timezone(&chrono::Local)
@@ -315,64 +235,7 @@ fn print_pretty(
     }
     println!();
 
-    let mut rows = vec![];
-    if let Some(resp) = models_resp {
-        if let Some(models) = &resp.models {
-            let mut sorted_models: Vec<(&String, &ModelInfo)> = models.iter().collect();
-            sorted_models.sort_by(|a, b| {
-                let name_a =
-                    a.1.display_name
-                        .as_ref()
-                        .or(a.1.label.as_ref())
-                        .unwrap_or(a.0);
-                let name_b =
-                    b.1.display_name
-                        .as_ref()
-                        .or(b.1.label.as_ref())
-                        .unwrap_or(b.0);
-                name_a.cmp(name_b)
-            });
 
-            let mut seen_names = std::collections::HashSet::new();
-            for (model_id, info) in sorted_models {
-                if should_show_model(model_id, info, all_models) {
-                    let name = info
-                        .display_name
-                        .as_ref()
-                        .or(info.label.as_ref())
-                        .cloned()
-                        .unwrap_or_else(|| model_id.clone());
-
-                    if !seen_names.insert(name.clone()) {
-                        continue;
-                    }
-
-                    let quota = info.quota_info.as_ref().unwrap();
-                    let effective_frac = get_effective_remaining_fraction(
-                        &name,
-                        quota.remaining_fraction,
-                        quota_summary_resp,
-                    );
-                    let rem_pct =
-                        format_remaining(effective_frac, quota.is_exhausted.unwrap_or(false));
-                    let reset_in = quota
-                        .reset_time
-                        .as_ref()
-                        .map(|t| format_time_until_reset(t))
-                        .unwrap_or_else(|| "N/A".to_string());
-
-                    rows.push(vec![name, rem_pct, reset_in]);
-                }
-            }
-        }
-    }
-
-    if !rows.is_empty() {
-        println!("\x1b[1;36m📋 Model Quotas\x1b[0m");
-        print_table(&["Model", "Remaining %", "Reset In"], &rows);
-    } else {
-        println!("No model quota information available.");
-    }
 
     if let Some(summary) = quota_summary_resp {
         // 1. Display individual buckets if they exist
@@ -394,19 +257,9 @@ fn print_pretty(
                 let group_name = group.display_name.as_deref().unwrap_or("Unnamed Group");
                 let group_desc = group.description.as_deref().unwrap_or("");
 
-                let cleaned_desc = if group_desc.starts_with("Models within this group: ") {
-                    &group_desc["Models within this group: ".len()..]
-                } else {
-                    group_desc
-                };
-
-                if cleaned_desc.is_empty() {
-                    println!("\n\x1b[1;36m👥 Group: {}\x1b[0m", group_name);
-                } else {
-                    println!(
-                        "\n\x1b[1;36m👥 Group: {}\x1b[0m - {}",
-                        group_name, cleaned_desc
-                    );
+                println!("\n\x1b[1;36m👥 {}\x1b[0m", group_name);
+                if !group_desc.is_empty() {
+                    println!("{}", group_desc);
                 }
 
                 let mut group_rows = vec![];
@@ -435,7 +288,6 @@ fn print_pretty(
 fn print_json(
     email: &str,
     code_assist: &crate::google_api::LoadCodeAssistResponse,
-    models_resp: &Option<crate::google_api::FetchAvailableModelsResponse>,
     quota_summary_resp: &Option<RetrieveUserQuotaSummaryResponse>,
 ) {
     #[derive(serde::Serialize)]
@@ -443,7 +295,6 @@ fn print_json(
         email: &'a str,
         timestamp: String,
         prompt_credits: Option<serde_json::Value>,
-        models: Option<serde_json::Value>,
         quota_summary: Option<serde_json::Value>,
     }
 
@@ -451,9 +302,6 @@ fn print_json(
         email,
         timestamp: Utc::now().to_rfc3339(),
         prompt_credits: serde_json::to_value(code_assist).ok(),
-        models: models_resp
-            .as_ref()
-            .and_then(|r| serde_json::to_value(r).ok()),
         quota_summary: quota_summary_resp
             .as_ref()
             .and_then(|r| serde_json::to_value(r).ok()),

@@ -54,14 +54,11 @@ agy-usage accounts remove user@example.com
 
 ### 3. Checking Quota and Usage
 
-Display the quota information for the currently active account.
+Display the user quota summary (remaining usage, reset times), plan type, and prompt credits for the currently active account. Note that basic metadata (such as plan info) is cached for 5 minutes to reduce redundant API calls, while quota limits are fetched in real-time.
 
 ```bash
 # Display quota
 agy-usage quota
-
-# Include all models (including Gemini 2.5 autocomplete models)
-agy-usage quota --all-models
 
 # Output in JSON format
 agy-usage quota --json
@@ -69,7 +66,7 @@ agy-usage quota --json
 
 ### 4. Wakeup Trigger
 
-Trigger models to start quota limitation timers or wake them up.
+Trigger models to start quota limitation timers or wake them up. To prevent excessive API requests and save your quota, `wakeup` implements a 5-minute cache per model. If triggered multiple times within 5 minutes, subsequent calls will be skipped.
 
 ```bash
 # Trigger wakeup for default models
