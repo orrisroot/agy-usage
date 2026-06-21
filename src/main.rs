@@ -24,6 +24,10 @@ struct Cli {
     /// Enable debug output (shortcut for quota --debug / wakeup --debug)
     #[arg(long)]
     debug: bool,
+
+    /// Force bypass cache to fetch latest data
+    #[arg(short, long)]
+    force: bool,
 }
 
 #[derive(Subcommand)]
@@ -71,6 +75,10 @@ enum Commands {
         /// Enable debug output (shows API request and response details)
         #[arg(long)]
         debug: bool,
+
+        /// Force bypass cache to fetch latest data
+        #[arg(short, long)]
+        force: bool,
     },
     /// Trigger models to start quota limitation timers / wakeup
     Wakeup {
@@ -277,11 +285,13 @@ async fn main() {
             json,
             account,
             debug,
+            force,
         }) => {
             let quota_opts = quota::QuotaOptions {
                 json,
                 account,
                 debug: debug || cli.debug,
+                force: force || cli.force,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
                 eprintln!("{} {}", "Error:".red().bold(), e);
@@ -318,6 +328,7 @@ async fn main() {
                 json: cli.json,
                 account: cli.account,
                 debug: cli.debug,
+                force: cli.force,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
                 eprintln!("{} {}", "Error:".red().bold(), e);

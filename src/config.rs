@@ -120,10 +120,10 @@ pub fn list_accounts() -> Vec<String> {
                 let tokens_path = entry.path().join("tokens.json");
                 if tokens_path.exists() {
                     // Try to read email from tokens.json
-                    if let Ok(content) = read_to_string(&tokens_path) {
-                        if let Ok(tokens) = serde_json::from_str::<StoredTokens>(&content) {
-                            emails.push(tokens.email);
-                        }
+                    if let Ok(content) = read_to_string(&tokens_path)
+                        && let Ok(tokens) = serde_json::from_str::<StoredTokens>(&content)
+                    {
+                        emails.push(tokens.email);
                     }
                 }
             }

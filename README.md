@@ -54,13 +54,16 @@ agy-usage accounts remove user@example.com
 
 ### 3. Checking Quota and Usage
 
-Display the user quota summary (remaining usage, reset times), plan type, and prompt credits for the currently active account. Note that basic metadata (such as plan info) is cached for 5 minutes to reduce redundant API calls, while quota limits are fetched in real-time.
+Display the user quota summary (remaining usage, reset times), plan type, and prompt credits for the currently active account. Note that both basic metadata (such as plan info) and quota limits are **cached for 5 minutes** to prevent excessive API requests and rate limiting. Use the `--force` flag to bypass the cache and fetch real-time data.
 
 **Tip:** When you pipe or redirect the output (e.g., `agy-usage quota > result.md`), it automatically switches to Markdown format and disables terminal colors. Loading messages are sent to `stderr` to keep your output clean for scripts.
 
 ```bash
 # Display quota
 agy-usage quota
+
+# Force bypass cache to fetch real-time data
+agy-usage quota --force
 
 # Output in JSON format
 agy-usage quota --json

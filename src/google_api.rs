@@ -104,6 +104,12 @@ pub struct CachedCodeAssist {
     pub fetched_at: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CachedQuotaSummary {
+    pub response: RetrieveUserQuotaSummaryResponse,
+    pub fetched_at: u64,
+}
+
 pub fn extract_project_id(val: &serde_json::Value) -> Option<String> {
     match val {
         serde_json::Value::String(s) => Some(s.clone()),
@@ -159,8 +165,7 @@ async fn execute_request_internal(
         for (name, value) in request.headers() {
             if name == reqwest::header::AUTHORIZATION {
                 if let Ok(val_str) = value.to_str() {
-                    if val_str.starts_with("Bearer ") {
-                        let token = &val_str[7..];
+                    if let Some(token) = val_str.strip_prefix("Bearer ") {
                         let masked = if token.len() > 12 {
                             format!("Bearer {}...{}", &token[..6], &token[token.len() - 6..])
                         } else {
@@ -179,12 +184,11 @@ async fn execute_request_internal(
         }
         if let Some(body) = body_for_log {
             eprintln!("Body: {}", sanitize_body(&body));
-        } else if let Some(body) = request.body() {
-            if let Some(bytes) = body.as_bytes() {
-                if let Ok(s) = std::str::from_utf8(bytes) {
-                    eprintln!("Body: {}", sanitize_body(s));
-                }
-            }
+        } else if let Some(body) = request.body()
+            && let Some(bytes) = body.as_bytes()
+            && let Ok(s) = std::str::from_utf8(bytes)
+        {
+            eprintln!("Body: {}", sanitize_body(s));
         }
         eprintln!("{}", "-------------------".yellow().bold());
     }
@@ -296,16 +300,16 @@ pub fn pick_onboard_tier(
 ) -> Option<String> {
     if let Some(ref tiers) = response.allowed_tiers {
         // Find default tier
-        if let Some(t) = tiers.iter().find(|t| t.is_default == Some(true)) {
-            if let Some(ref id) = t.id {
-                return Some(id.clone());
-            }
+        if let Some(t) = tiers.iter().find(|t| t.is_default == Some(true))
+            && let Some(ref id) = t.id
+        {
+            return Some(id.clone());
         }
         // Find first tier
-        if let Some(t) = tiers.first() {
-            if let Some(ref id) = t.id {
-                return Some(id.clone());
-            }
+        if let Some(t) = tiers.first()
+            && let Some(ref id) = t.id
+        {
+            return Some(id.clone());
         }
         if !tiers.is_empty() {
             return Some("LEGACY".to_string());
@@ -361,18 +365,19 @@ impl ApiClient {
 
     pub async fn load_code_assist(
         &mut self,
+        force: bool,
     ) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
         let cache_path =
             crate::config::get_account_dir(&self.tokens.email).join("code_assist_cache.json");
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cache_ttl = 5 * 60 * 1000; // 5 minutes
 
-        if let Ok(content) = std::fs::read_to_string(&cache_path) {
-            if let Ok(cached) = serde_json::from_str::<CachedCodeAssist>(&content) {
-                if now < cached.fetched_at + cache_ttl {
-                    return Ok(cached.response);
-                }
-            }
+        if !force
+            && let Ok(content) = std::fs::read_to_string(&cache_path)
+            && let Ok(cached) = serde_json::from_str::<CachedCodeAssist>(&content)
+            && now < cached.fetched_at + cache_ttl
+        {
+            return Ok(cached.response);
         }
 
         let access_token = self.ensure_valid_token().await?;
@@ -402,10 +407,10 @@ impl ApiClient {
             response: parsed.clone(),
             fetched_at: now,
         };
-        if let Ok(content) = serde_json::to_string(&cached) {
-            if let Err(e) = std::fs::write(&cache_path, content) {
-                eprintln!("Warning: Failed to write code assist cache: {}", e);
-            }
+        if let Ok(content) = serde_json::to_string(&cached)
+            && let Err(e) = std::fs::write(&cache_path, content)
+        {
+            eprintln!("Warning: Failed to write code assist cache: {}", e);
         }
 
         Ok(parsed)
@@ -413,7 +418,21 @@ impl ApiClient {
 
     pub async fn retrieve_user_quota_summary(
         &mut self,
+        force: bool,
     ) -> Result<RetrieveUserQuotaSummaryResponse, Box<dyn std::error::Error>> {
+        let cache_path =
+            crate::config::get_account_dir(&self.tokens.email).join("quota_summary_cache.json");
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let cache_ttl = 5 * 60 * 1000; // 5 minutes
+
+        if !force
+            && let Ok(content) = std::fs::read_to_string(&cache_path)
+            && let Ok(cached) = serde_json::from_str::<CachedQuotaSummary>(&content)
+            && now < cached.fetched_at + cache_ttl
+        {
+            return Ok(cached.response);
+        }
+
         let access_token = self.ensure_valid_token().await?;
         let payload = if let Some(ref proj) = self.tokens.project_id {
             serde_json::json!({ "project": proj })
@@ -436,6 +455,18 @@ impl ApiClient {
             .await?;
         let res = res.error_for_status()?;
         let parsed = res.json::<RetrieveUserQuotaSummaryResponse>()?;
+
+        // Save to cache
+        let cached = CachedQuotaSummary {
+            response: parsed.clone(),
+            fetched_at: now,
+        };
+        if let Ok(content) = serde_json::to_string(&cached)
+            && let Err(e) = std::fs::write(&cache_path, content)
+        {
+            eprintln!("Warning: Failed to write quota summary cache: {}", e);
+        }
+
         Ok(parsed)
     }
 
@@ -473,25 +504,31 @@ impl ApiClient {
             response: Option<serde_json::Value>,
         }
 
-        if let Ok(onboard_res) = res.json::<OnboardResponse>() {
-            if onboard_res.done == Some(true) {
-                if let Some(resp) = onboard_res.response {
-                    if let Some(proj) = resp.get("cloudaicompanionProject") {
-                        return Ok(extract_project_id(proj));
-                    }
-                }
-            }
+        if let Ok(onboard_res) = res.json::<OnboardResponse>()
+            && onboard_res.done == Some(true)
+            && let Some(resp) = onboard_res.response
+            && let Some(proj) = resp.get("cloudaicompanionProject")
+        {
+            return Ok(extract_project_id(proj));
         }
         Ok(None)
     }
 
-    pub async fn resolve_project_id(&mut self) -> Option<String> {
+    pub async fn resolve_project_id(&mut self, force: bool) -> Option<String> {
         let cached_p = self.tokens.project_id.clone();
 
-        let load_resp = match self.load_code_assist().await {
+        let load_resp = match self.load_code_assist(force).await {
             Ok(resp) => resp,
             Err(_) => return None,
         };
+
+        if !force
+            && let Some(ref proj_val) = load_resp.cloudaicompanion_project
+            && let Some(p) = extract_project_id(proj_val)
+            && Some(&p) == cached_p.as_ref()
+        {
+            return Some(p);
+        }
 
         let target_tier_id = load_resp
             .paid_tier
@@ -501,17 +538,15 @@ impl ApiClient {
 
         let current_tier_id = load_resp.current_tier.as_ref().and_then(|t| t.id.clone());
 
-        if target_tier_id == current_tier_id {
-            if let Some(ref proj_val) = load_resp.cloudaicompanion_project {
-                if let Some(p) = extract_project_id(proj_val) {
-                    if Some(&p) != cached_p.as_ref() {
-                        self.tokens.project_id = Some(p.clone());
-                        let _ =
-                            crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
-                    }
-                    return Some(p);
-                }
+        if target_tier_id == current_tier_id
+            && let Some(ref proj_val) = load_resp.cloudaicompanion_project
+            && let Some(p) = extract_project_id(proj_val)
+        {
+            if Some(&p) != cached_p.as_ref() {
+                self.tokens.project_id = Some(p.clone());
+                let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
             }
+            return Some(p);
         }
 
         // Attempt onboarding
@@ -526,15 +561,13 @@ impl ApiClient {
         // Poll loadCodeAssist with retries
         for _ in 0..5 {
             tokio::time::sleep(Duration::from_millis(2000)).await;
-            if let Ok(resp) = self.load_code_assist().await {
-                if let Some(ref proj_val) = resp.cloudaicompanion_project {
-                    if let Some(p) = extract_project_id(proj_val) {
-                        self.tokens.project_id = Some(p.clone());
-                        let _ =
-                            crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
-                        return Some(p);
-                    }
-                }
+            if let Ok(resp) = self.load_code_assist(true).await
+                && let Some(ref proj_val) = resp.cloudaicompanion_project
+                && let Some(p) = extract_project_id(proj_val)
+            {
+                self.tokens.project_id = Some(p.clone());
+                let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
+                return Some(p);
             }
         }
 
@@ -549,7 +582,7 @@ impl ApiClient {
         let start_time = std::time::Instant::now();
 
         // 1. Warm up session
-        let _ = self.load_code_assist().await;
+        let _ = self.load_code_assist(false).await;
 
         // 2. Build Request Body
         let request_id = generate_uuid();
@@ -622,8 +655,7 @@ impl ApiClient {
                         let mut usage = None;
 
                         for line in text.lines() {
-                            if line.starts_with("data: ") {
-                                let json_str = &line[6..];
+                            if let Some(json_str) = line.strip_prefix("data: ") {
                                 if json_str.trim() == "[DONE]" {
                                     continue;
                                 }
@@ -635,12 +667,12 @@ impl ApiClient {
                                         .or(root.candidates.as_ref());
                                     if let Some(candidates) = candidates {
                                         for cand in candidates {
-                                            if let Some(ref content) = cand.content {
-                                                if let Some(ref parts) = content.parts {
-                                                    for part in parts {
-                                                        if let Some(ref t) = part.text {
-                                                            full_text.push_str(t);
-                                                        }
+                                            if let Some(ref content) = cand.content
+                                                && let Some(ref parts) = content.parts
+                                            {
+                                                for part in parts {
+                                                    if let Some(ref t) = part.text {
+                                                        full_text.push_str(t);
                                                     }
                                                 }
                                             }

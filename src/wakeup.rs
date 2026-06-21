@@ -33,7 +33,7 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     let mut api_client = ApiClient::new(tokens, options.debug);
 
     // Resolve project ID (automatically handles onboarding & dirty state if needed)
-    let project_id = api_client.resolve_project_id().await;
+    let project_id = api_client.resolve_project_id(false).await;
 
     // Determine target models
     let default_models = vec![
@@ -78,11 +78,11 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     for model_id in validated_models {
         println!("\n⏳ Triggering {}...", model_id);
 
-        if let Some(&last_time) = wakeup_cache.history.get(&model_id) {
-            if now < last_time + skip_ttl {
-                println!("\x1b[33m⏭️  Skipped\x1b[0m (already triggered recently)");
-                continue;
-            }
+        if let Some(&last_time) = wakeup_cache.history.get(&model_id)
+            && now < last_time + skip_ttl
+        {
+            println!("\x1b[33m⏭️  Skipped\x1b[0m (already triggered recently)");
+            continue;
         }
 
         let trigger_opts = TriggerOptions {
@@ -121,10 +121,10 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
         }
     }
 
-    if let Ok(content) = serde_json::to_string_pretty(&wakeup_cache) {
-        if let Err(e) = std::fs::write(&cache_path, content) {
-            eprintln!("Warning: Failed to write wakeup cache: {}", e);
-        }
+    if let Ok(content) = serde_json::to_string_pretty(&wakeup_cache)
+        && let Err(e) = std::fs::write(&cache_path, content)
+    {
+        eprintln!("Warning: Failed to write wakeup cache: {}", e);
     }
 
     println!("\n✨ Wakeup/Trigger cycle complete.");

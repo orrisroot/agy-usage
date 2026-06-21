@@ -118,7 +118,7 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
         println!("{}\n", auth_url_str);
     } else {
         println!("Opening browser for Google login...");
-        if let Err(_) = open::that(&auth_url_str) {
+        if open::that(&auth_url_str).is_err() {
             println!("Could not open browser automatically.");
             println!("Please visit this URL to log in:");
             println!("{}\n", auth_url_str);
@@ -142,8 +142,8 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                         let parts: Vec<&str> = first_line.split_whitespace().collect();
                         if parts.len() >= 2 && parts[0] == "GET" {
                             let path_and_query = parts[1];
-                            if let Ok(url) = Url::parse(&format!("http://127.0.0.1:{}", path_and_query)) {
-                                if url.path() == "/callback" {
+                            if let Ok(url) = Url::parse(&format!("http://127.0.0.1:{}", path_and_query))
+                                && url.path() == "/callback" {
                                     let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
 
                                     if let Some(err) = params.get("error") {
@@ -197,7 +197,6 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                 }
@@ -234,7 +233,7 @@ async fn complete_login(
 
     println!("Resolving project ID...");
     let mut api_client = ApiClient::new(initial_tokens, false);
-    let _ = api_client.resolve_project_id().await;
+    let _ = api_client.resolve_project_id(false).await;
     let tokens = api_client.tokens().clone();
 
     save_account_tokens(&email, &tokens)?;

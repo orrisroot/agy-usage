@@ -9,6 +9,7 @@ pub struct QuotaOptions {
     pub json: bool,
     pub account: Option<String>,
     pub debug: bool,
+    pub force: bool,
 }
 
 pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -30,12 +31,12 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
     let mut api_client = ApiClient::new(tokens, options.debug);
 
     eprintln!("Fetching quota information from Google API...");
-    let code_assist = api_client.load_code_assist().await?;
+    let code_assist = api_client.load_code_assist(options.force).await?;
 
     // Resolve project ID (automatically handles onboarding & dirty state if needed)
-    let _project_id = api_client.resolve_project_id().await;
+    let _project_id = api_client.resolve_project_id(options.force).await;
 
-    let quota_summary_resp = match api_client.retrieve_user_quota_summary().await {
+    let quota_summary_resp = match api_client.retrieve_user_quota_summary(options.force).await {
         Ok(qs) => Some(qs),
         Err(e) => {
             eprintln!("Warning: Failed to fetch user quota summary ({})", e);
@@ -143,8 +144,8 @@ fn format_remaining(fraction: Option<f64>, is_exhausted: bool) -> String {
 fn strip_ansi_codes(s: &str) -> String {
     let mut clean = String::new();
     let mut in_escape = false;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
+    let chars = s.chars().peekable();
+    for c in chars {
         if c == '\x1b' {
             in_escape = true;
             continue;
@@ -341,12 +342,11 @@ fn print_pretty(
         }
     }
 
-    if let Some(summary) = quota_summary_resp {
-        if let Some(description) = &summary.description {
-            if !description.is_empty() {
-                println!("\n{}", description);
-            }
-        }
+    if let Some(summary) = quota_summary_resp
+        && let Some(description) = &summary.description
+        && !description.is_empty()
+    {
+        println!("\n{}", description);
     }
 }
 
@@ -471,10 +471,10 @@ fn print_markdown(
             }
         }
 
-        if let Some(description) = &summary.description {
-            if !description.is_empty() {
-                println!("\n{}", description);
-            }
+        if let Some(description) = &summary.description
+            && !description.is_empty()
+        {
+            println!("\n{}", description);
         }
     }
 }
