@@ -6,7 +6,7 @@
 
 - **Google OAuth Authentication**: Sign in and authenticate using your Google account.
 - **Multi-Account Management**: Register multiple Google accounts and switch between them seamlessly.
-- **Quota Information Display**: Fetch and display real-time model usage limits and quotas in your terminal (JSON output format is also supported).
+- **Quota Information Display**: Fetch and display real-time model usage limits and quotas in your terminal. Output automatically falls back to Markdown format when piped or redirected, making it CI/CD and script-friendly. JSON output format is also supported.
 - **Wakeup Functionality**: Trigger models to initiate quota limitation timers or wake up the model.
 
 ## Installation / Build
@@ -55,6 +55,8 @@ agy-usage accounts remove user@example.com
 ### 3. Checking Quota and Usage
 
 Display the user quota summary (remaining usage, reset times), plan type, and prompt credits for the currently active account. Note that basic metadata (such as plan info) is cached for 5 minutes to reduce redundant API calls, while quota limits are fetched in real-time.
+
+**Tip:** When you pipe or redirect the output (e.g., `agy-usage quota > result.md`), it automatically switches to Markdown format and disables terminal colors. Loading messages are sent to `stderr` to keep your output clean for scripts.
 
 ```bash
 # Display quota
