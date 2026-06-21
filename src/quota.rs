@@ -1,6 +1,8 @@
 use crate::config::get_active_account_tokens;
 use crate::google_api::{ApiClient, RetrieveUserQuotaSummaryResponse};
 use chrono::{DateTime, Utc};
+use colored::Colorize;
+use std::io::IsTerminal;
 use unicode_width::UnicodeWidthStr;
 
 pub struct QuotaOptions {
@@ -24,10 +26,10 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
         }
     };
 
-    println!("Checking authentication status...");
+    eprintln!("Checking authentication status...");
     let mut api_client = ApiClient::new(tokens, options.debug);
 
-    println!("Fetching quota information from Google API...");
+    eprintln!("Fetching quota information from Google API...");
     let code_assist = api_client.load_code_assist().await?;
 
     // Resolve project ID (automatically handles onboarding & dirty state if needed)
@@ -47,8 +49,15 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
             &code_assist,
             &quota_summary_resp,
         );
-    } else {
+    } else if std::io::stdout().is_terminal() {
+        eprintln!(); // Print the separating newline to stderr
         print_pretty(
+            &api_client.tokens().email,
+            &code_assist,
+            &quota_summary_resp,
+        );
+    } else {
+        print_markdown(
             &api_client.tokens().email,
             &code_assist,
             &quota_summary_resp,
@@ -58,20 +67,18 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-
-
 fn format_reset_time(reset_time_str: &str) -> String {
     if let Ok(dt) = DateTime::parse_from_rfc3339(reset_time_str) {
         let diff = dt.with_timezone(&Utc).signed_duration_since(Utc::now());
         let sec = diff.num_seconds();
-        
+
         let local_dt = dt.with_timezone(&chrono::Local);
         let reset_at = local_dt.format("%Y-%m-%d %H:%M").to_string();
-        
+
         if sec <= 0 {
             return format!("{} - Resets soon", reset_at);
         }
-        
+
         let hours = sec / 3600;
         let mins = (sec % 3600) / 60;
         let duration = if hours >= 24 {
@@ -93,33 +100,40 @@ fn format_remaining(fraction: Option<f64>, is_exhausted: bool) -> String {
     let bar_len = 15;
     if is_exhausted {
         let bar = "░".repeat(bar_len);
-        return format!("\x1b[31;1m[{}] EXHAUSTED\x1b[0m", bar);
+        return format!("[{}] EXHAUSTED", bar).red().bold().to_string();
     }
     match fraction {
         Some(f) => {
             let pct = (f * 100.0).floor() as i32;
             let clamped_f = f.clamp(0.0, 1.0);
-            
+
             let total_steps = bar_len * 8;
             let active_steps = (clamped_f * total_steps as f64).round() as usize;
-            
+
             let full_blocks = active_steps / 8;
             let partial_step = active_steps % 8;
             let partials = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
-            
+
             let partial_char = partials[partial_step];
             let empty_blocks = bar_len - full_blocks - (if partial_step > 0 { 1 } else { 0 });
-            
-            let bar = format!("{}{}{}", "█".repeat(full_blocks), partial_char, "░".repeat(empty_blocks));
-            
+
+            let bar = format!(
+                "{}{}{}",
+                "█".repeat(full_blocks),
+                partial_char,
+                "░".repeat(empty_blocks)
+            );
+
             if pct >= 75 {
-                format!("\x1b[32m[{}] {:>3}%\x1b[0m", bar, pct)
+                format!("[{}] {:>3}%", bar, pct).green().to_string()
             } else if pct >= 50 {
-                format!("\x1b[33m[{}] {:>3}%\x1b[0m", bar, pct)
+                format!("[{}] {:>3}%", bar, pct).yellow().to_string()
             } else if pct >= 25 {
-                format!("\x1b[38;5;208m[{}] {:>3}%\x1b[0m", bar, pct)
+                format!("[{}] {:>3}%", bar, pct)
+                    .truecolor(255, 165, 0)
+                    .to_string()
             } else {
-                format!("\x1b[31m[{}] {:>3}%\x1b[0m", bar, pct)
+                format!("[{}] {:>3}%", bar, pct).red().to_string()
             }
         }
         None => "N/A".to_string(),
@@ -179,7 +193,8 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
 
     print!("│");
     for (i, h) in headers.iter().enumerate() {
-        print!(" \x1b[1;36m{:<width$}\x1b[0m │", h, width = widths[i]);
+        let header_str = format!("{:<width$}", h, width = widths[i]).cyan().bold();
+        print!(" {} │", header_str);
     }
     println!();
 
@@ -208,7 +223,7 @@ fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Ve
 
     let rem_pct = if bucket.disabled == Some(true) {
         let bar = "█".repeat(15);
-        format!("\x1b[32m[{}] Unlimited\x1b[0m", bar)
+        format!("[{}] Unlimited", bar).green().to_string()
     } else {
         let is_exhausted = bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
         format_remaining(bucket.remaining_fraction, is_exhausted)
@@ -223,8 +238,6 @@ fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Ve
     vec![name.to_string(), rem_pct, reset_time]
 }
 
-
-
 fn print_pretty(
     email: &str,
     code_assist: &crate::google_api::LoadCodeAssistResponse,
@@ -234,9 +247,9 @@ fn print_pretty(
         .with_timezone(&chrono::Local)
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    println!("\n\x1b[1;34m📊 Antigravity Quota Status\x1b[0m");
+    println!("{}", "📊 Antigravity Quota Status".blue().bold());
     println!("   Retrieved: {}", now_str);
-    println!("   Active Account: \x1b[1m{}\x1b[0m", email);
+    println!("   Active Account: {}", email.bold());
 
     let plan_id = code_assist
         .plan_info
@@ -268,24 +281,26 @@ fn print_pretty(
         }
     };
 
-    println!("   Plan Type: \x1b[35m{}\x1b[0m", plan_label);
+    println!("   Plan Type: {}", plan_label.magenta());
 
     if let Some(avail) = code_assist.available_prompt_credits {
-        if let Some(monthly) = code_assist.plan_info.as_ref().and_then(|p| p.monthly_prompt_credits) {
+        if let Some(monthly) = code_assist
+            .plan_info
+            .as_ref()
+            .and_then(|p| p.monthly_prompt_credits)
+        {
             println!(
-                "   Prompt Credits: \x1b[32m{}\x1b[0m / {} ({} remaining)",
-                avail,
+                "   Prompt Credits: {} / {} ({} remaining)",
+                avail.to_string().green(),
                 monthly,
                 format_remaining(Some(avail as f64 / monthly as f64), false)
             );
         } else {
-            println!("   Prompt Credits: \x1b[32m{}\x1b[0m", avail);
+            println!("   Prompt Credits: {}", avail.to_string().green());
         }
     } else {
-        println!("   Prompt Credits: \x1b[32mUnlimited\x1b[0m");
+        println!("   Prompt Credits: {}", "Unlimited".green());
     }
-
-
 
     if let Some(summary) = quota_summary_resp {
         // 1. Display individual buckets if they exist
@@ -297,7 +312,7 @@ fn print_pretty(
         }
 
         if !quota_rows.is_empty() {
-            println!("\n\x1b[1;36m📋 User Quota Summary (Buckets)\x1b[0m");
+            println!("\n{}", "📋 User Quota Summary (Buckets)".cyan().bold());
             print_table(&["Quota Bucket", "Remaining %", "Reset Time"], &quota_rows);
         }
 
@@ -307,7 +322,7 @@ fn print_pretty(
                 let group_name = group.display_name.as_deref().unwrap_or("Unnamed Group");
                 let group_desc = group.description.as_deref().unwrap_or("");
 
-                println!("\n\x1b[1;36m👥 {}\x1b[0m", group_name);
+                println!("\n{} {}", "👥".cyan().bold(), group_name.cyan().bold());
                 if !group_desc.is_empty() {
                     println!("{}", group_desc);
                 }
@@ -327,6 +342,135 @@ fn print_pretty(
     }
 
     if let Some(summary) = quota_summary_resp {
+        if let Some(description) = &summary.description {
+            if !description.is_empty() {
+                println!("\n{}", description);
+            }
+        }
+    }
+}
+
+fn print_markdown_table(headers: &[&str], rows: &[Vec<String>]) {
+    if rows.is_empty() {
+        return;
+    }
+    println!("| {} |", headers.join(" | "));
+    println!(
+        "|{}|",
+        headers.iter().map(|_| "---").collect::<Vec<_>>().join("|")
+    );
+    for row in rows {
+        let clean_row: Vec<String> = row.iter().map(|v| strip_ansi_codes(v)).collect();
+        println!("| {} |", clean_row.join(" | "));
+    }
+}
+
+fn print_markdown(
+    email: &str,
+    code_assist: &crate::google_api::LoadCodeAssistResponse,
+    quota_summary_resp: &Option<RetrieveUserQuotaSummaryResponse>,
+) {
+    let now_str = Utc::now()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    println!("# 📊 Antigravity Quota Status\n");
+    println!("- **Retrieved:** {}", now_str);
+    println!("- **Active Account:** {}", email);
+
+    let plan_id = code_assist
+        .plan_info
+        .as_ref()
+        .and_then(|p| p.plan_type.clone())
+        .or_else(|| code_assist.paid_tier.as_ref().and_then(|t| t.id.clone()))
+        .or_else(|| code_assist.current_tier.as_ref().and_then(|t| t.id.clone()))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let plan_label = match plan_id.as_str() {
+        "g1-pro-tier" => "Google AI Pro".to_string(),
+        "free-tier" => "Free Tier".to_string(),
+        "standard-tier" => "Standard Tier".to_string(),
+        other => {
+            let mut name = other.to_string();
+            if name.ends_with("-tier") {
+                name = name[..name.len() - 5].to_string();
+            }
+            name.split('-')
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    };
+
+    println!("- **Plan Type:** {}", plan_label);
+
+    if let Some(avail) = code_assist.available_prompt_credits {
+        if let Some(monthly) = code_assist
+            .plan_info
+            .as_ref()
+            .and_then(|p| p.monthly_prompt_credits)
+        {
+            println!(
+                "- **Prompt Credits:** {} / {} ({} remaining)",
+                avail,
+                monthly,
+                strip_ansi_codes(&format_remaining(
+                    Some(avail as f64 / monthly as f64),
+                    false
+                ))
+            );
+        } else {
+            println!("- **Prompt Credits:** {}", avail);
+        }
+    } else {
+        println!("- **Prompt Credits:** Unlimited");
+    }
+
+    if let Some(summary) = quota_summary_resp {
+        let mut quota_rows = vec![];
+        if let Some(buckets) = &summary.buckets {
+            for bucket in buckets {
+                quota_rows.push(format_quota_bucket_row(bucket));
+            }
+        }
+
+        if !quota_rows.is_empty() {
+            println!("\n## 📋 User Quota Summary (Buckets)\n");
+            print_markdown_table(&["Quota Bucket", "Remaining %", "Reset Time"], &quota_rows);
+        }
+
+        if let Some(groups) = &summary.groups {
+            for group in groups {
+                let group_name = group.display_name.as_deref().unwrap_or("Unnamed Group");
+                let group_desc = group.description.as_deref().unwrap_or("");
+
+                println!("\n## 👥 {}\n", group_name);
+                if !group_desc.is_empty() {
+                    println!("{}\n", group_desc);
+                }
+
+                let mut group_rows = vec![];
+                if let Some(buckets) = &group.buckets {
+                    for bucket in buckets {
+                        group_rows.push(format_quota_bucket_row(bucket));
+                    }
+                }
+
+                if !group_rows.is_empty() {
+                    print_markdown_table(
+                        &["Quota Bucket", "Remaining %", "Reset Time"],
+                        &group_rows,
+                    );
+                }
+            }
+        }
+
         if let Some(description) = &summary.description {
             if !description.is_empty() {
                 println!("\n{}", description);
@@ -371,20 +515,31 @@ mod tests {
     fn test_format_reset_time() {
         let now = Utc::now();
         let local_fmt = |dt: DateTime<Utc>| {
-            dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
         };
 
         // 1. Resets soon
         let past = now - Duration::seconds(10);
-        assert_eq!(format_reset_time(&past.to_rfc3339()), format!("{} - Resets soon", local_fmt(past)));
+        assert_eq!(
+            format_reset_time(&past.to_rfc3339()),
+            format!("{} - Resets soon", local_fmt(past))
+        );
 
         // 2. Under a minute -> 0m
         let seconds_30 = now + Duration::seconds(30);
-        assert_eq!(format_reset_time(&seconds_30.to_rfc3339()), format!("{} - 0m", local_fmt(seconds_30)));
+        assert_eq!(
+            format_reset_time(&seconds_30.to_rfc3339()),
+            format!("{} - 0m", local_fmt(seconds_30))
+        );
 
         // 3. 2 minutes
         let mins_2 = now + Duration::seconds(125);
-        assert_eq!(format_reset_time(&mins_2.to_rfc3339()), format!("{} - 2m", local_fmt(mins_2)));
+        assert_eq!(
+            format_reset_time(&mins_2.to_rfc3339()),
+            format!("{} - 2m", local_fmt(mins_2))
+        );
 
         // 4. 1h 1m
         let hours_1_mins_1 = now + Duration::hours(1) + Duration::minutes(1) + Duration::seconds(5);
@@ -395,7 +550,10 @@ mod tests {
 
         // 5. 24h (1d 0h 0m)
         let hours_24 = now + Duration::hours(24) + Duration::seconds(5);
-        assert_eq!(format_reset_time(&hours_24.to_rfc3339()), format!("{} - 1d 0h 0m", local_fmt(hours_24)));
+        assert_eq!(
+            format_reset_time(&hours_24.to_rfc3339()),
+            format!("{} - 1d 0h 0m", local_fmt(hours_24))
+        );
 
         // 6. 25h 1m (1d 1h 1m)
         let hours_25_mins_1 =
@@ -407,6 +565,9 @@ mod tests {
 
         // 7. 49h (2d 1h 0m)
         let hours_49 = now + Duration::hours(49) + Duration::seconds(5);
-        assert_eq!(format_reset_time(&hours_49.to_rfc3339()), format!("{} - 2d 1h 0m", local_fmt(hours_49)));
+        assert_eq!(
+            format_reset_time(&hours_49.to_rfc3339()),
+            format!("{} - 2d 1h 0m", local_fmt(hours_49))
+        );
     }
 }

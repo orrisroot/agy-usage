@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-
+use colored::Colorize;
 mod config;
 mod google_api;
 mod oauth;
@@ -128,12 +128,13 @@ async fn main() {
             match oauth::run_login(opts).await {
                 Ok(email) => {
                     println!(
-                        "\x1b[32;1mSuccess:\x1b[0m Logged in successfully as \x1b[1m{}\x1b[0m!",
-                        email
+                        "{} Logged in successfully as {}!",
+                        "Success:".green().bold(),
+                        email.bold()
                     );
                 }
                 Err(e) => {
-                    eprintln!("\x1b[31;1mError:\x1b[0m Login failed: {}", e);
+                    eprintln!("{} Login failed: {}", "Error:".red().bold(), e);
                     std::process::exit(1);
                 }
             }
@@ -153,27 +154,34 @@ async fn main() {
                         println!("Logged out of {}.", email);
                     }
                 }
-                println!("\x1b[32mSuccessfully logged out of all accounts.\x1b[0m");
+                println!("{}", "Successfully logged out of all accounts.".green());
             } else if let Some(ref email) = email {
                 if let Err(e) = config::remove_account(email) {
                     eprintln!(
-                        "\x1b[31;1mError:\x1b[0m Failed to logout from {}: {}",
-                        email, e
-                    );
-                    std::process::exit(1);
-                }
-                println!("\x1b[32mSuccessfully logged out of {}.\x1b[0m", email);
-            } else if let Some(ref email) = global.active_email {
-                if let Err(e) = config::remove_account(email) {
-                    eprintln!(
-                        "\x1b[31;1mError:\x1b[0m Failed to logout from {}: {}",
-                        email, e
+                        "{} Failed to logout from {}: {}",
+                        "Error:".red().bold(),
+                        email,
+                        e
                     );
                     std::process::exit(1);
                 }
                 println!(
-                    "\x1b[32mSuccessfully logged out of active account {}.\x1b[0m",
-                    email
+                    "{}",
+                    format!("Successfully logged out of {}.", email).green()
+                );
+            } else if let Some(ref email) = global.active_email {
+                if let Err(e) = config::remove_account(email) {
+                    eprintln!(
+                        "{} Failed to logout from {}: {}",
+                        "Error:".red().bold(),
+                        email,
+                        e
+                    );
+                    std::process::exit(1);
+                }
+                println!(
+                    "{}",
+                    format!("Successfully logged out of active account {}.", email).green()
                 );
             } else {
                 println!("No active account to log out from.");
@@ -190,9 +198,9 @@ async fn main() {
             for email in accounts {
                 let is_active = global.active_email.as_ref() == Some(&email);
                 let status_str = if is_active {
-                    "\x1b[32m[*] (active)\x1b[0m"
+                    "[*] (active)".green().to_string()
                 } else {
-                    ""
+                    "".to_string()
                 };
                 println!(" - {} {}", email, status_str);
             }
@@ -211,7 +219,7 @@ async fn main() {
                     for email in emails {
                         let is_active = global.active_email.as_ref() == Some(&email);
                         if is_active {
-                            println!("  \x1b[32;1m* {}\x1b[0m", email);
+                            println!("  {}", format!("* {}", email).green().bold());
                         } else {
                             println!("    {}", email);
                         }
@@ -222,7 +230,8 @@ async fn main() {
                     let emails = config::list_accounts();
                     if !emails.contains(&email) {
                         eprintln!(
-                            "\x1b[31;1mError:\x1b[0m Account {} not found. Log in first.",
+                            "{} Account {} not found. Log in first.",
+                            "Error:".red().bold(),
                             email
                         );
                         std::process::exit(1);
@@ -231,24 +240,28 @@ async fn main() {
                     global.active_email = Some(email.clone());
                     if let Err(e) = config::save_global_config(&global) {
                         eprintln!(
-                            "\x1b[31;1mError:\x1b[0m Failed to save configuration: {}",
+                            "{} Failed to save configuration: {}",
+                            "Error:".red().bold(),
                             e
                         );
                         std::process::exit(1);
                     }
-                    println!("\x1b[32mSwitched active account to: {}\x1b[0m", email);
+                    println!(
+                        "{}",
+                        format!("Switched active account to: {}", email).green()
+                    );
                 }
                 AccountsCommands::Remove { email } => {
                     let emails = config::list_accounts();
                     if !emails.contains(&email) {
-                        eprintln!("\x1b[31;1mError:\x1b[0m Account {} not found.", email);
+                        eprintln!("{} Account {} not found.", "Error:".red().bold(), email);
                         std::process::exit(1);
                     }
                     if let Err(e) = config::remove_account(&email) {
-                        eprintln!("\x1b[31;1mError:\x1b[0m Failed to remove account: {}", e);
+                        eprintln!("{} Failed to remove account: {}", "Error:".red().bold(), e);
                         std::process::exit(1);
                     }
-                    println!("\x1b[32mRemoved account {}.\x1b[0m", email);
+                    println!("{}", format!("Removed account {}.", email).green());
                 }
                 AccountsCommands::Current => {
                     let global = config::load_global_config();
@@ -271,7 +284,7 @@ async fn main() {
                 debug: debug || cli.debug,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
-                eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
+                eprintln!("{} {}", "Error:".red().bold(), e);
                 std::process::exit(1);
             }
         }
@@ -290,13 +303,13 @@ async fn main() {
                 debug: debug || cli.debug,
             };
             if let Err(e) = wakeup::run_wakeup(opts).await {
-                eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
+                eprintln!("{} {}", "Error:".red().bold(), e);
                 std::process::exit(1);
             }
         }
         Some(Commands::SelfUpdate) => {
             if let Err(e) = run_self_update() {
-                eprintln!("\x1b[31;1mError:\x1b[0m Self-update failed: {}", e);
+                eprintln!("{} Self-update failed: {}", "Error:".red().bold(), e);
                 std::process::exit(1);
             }
         }
@@ -307,7 +320,7 @@ async fn main() {
                 debug: cli.debug,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
-                eprintln!("\x1b[31;1mError:\x1b[0m {}", e);
+                eprintln!("{} {}", "Error:".red().bold(), e);
                 std::process::exit(1);
             }
         }
@@ -327,7 +340,8 @@ fn run_self_update() -> Result<(), Box<dyn std::error::Error>> {
 
     if status.updated() {
         println!(
-            "\x1b[32;1mSuccess:\x1b[0m Updated to version {}!",
+            "{} Updated to version {}!",
+            "Success:".green().bold(),
             status.version()
         );
     } else {

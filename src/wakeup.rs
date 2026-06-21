@@ -50,11 +50,16 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     // Default trigger prompt is a single character for extreme token saving
     let trigger_prompt = options.prompt.unwrap_or_else(|| ".".to_string());
 
-    let cache_path = crate::config::get_account_dir(&api_client.tokens().email).join("wakeup_cache.json");
+    let cache_path =
+        crate::config::get_account_dir(&api_client.tokens().email).join("wakeup_cache.json");
     let mut wakeup_cache = if let Ok(content) = std::fs::read_to_string(&cache_path) {
-        serde_json::from_str::<WakeupCache>(&content).unwrap_or_else(|_| WakeupCache { history: HashMap::new() })
+        serde_json::from_str::<WakeupCache>(&content).unwrap_or_else(|_| WakeupCache {
+            history: HashMap::new(),
+        })
     } else {
-        WakeupCache { history: HashMap::new() }
+        WakeupCache {
+            history: HashMap::new(),
+        }
     };
     let now = chrono::Utc::now().timestamp_millis() as u64;
     let skip_ttl = 5 * 60 * 1000; // 5 minutes
@@ -101,7 +106,10 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
                             usage.prompt, usage.completion, usage.total
                         );
                     }
-                    wakeup_cache.history.insert(model_id.clone(), chrono::Utc::now().timestamp_millis() as u64);
+                    wakeup_cache.history.insert(
+                        model_id.clone(),
+                        chrono::Utc::now().timestamp_millis() as u64,
+                    );
                 } else {
                     let err = result.error.unwrap_or_else(|| "Unknown error".to_string());
                     println!("\x1b[31;1m❌ Failed:\x1b[0m {}", err);

@@ -1,4 +1,5 @@
 use crate::config::StoredTokens;
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -22,7 +23,6 @@ pub struct OAuthTokenResponse {
 pub struct UserInfoResponse {
     pub email: String,
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QuotaSummaryBucket {
@@ -152,7 +152,7 @@ async fn execute_request_internal(
 ) -> Result<ApiResponse, reqwest::Error> {
     let request = builder.build()?;
     if debug {
-        eprintln!("\n\x1b[33;1m--- API Request ---\x1b[0m");
+        eprintln!("\n{}", "--- API Request ---".yellow().bold());
         eprintln!("Method: {}", request.method());
         eprintln!("URL: {}", request.url());
         eprintln!("Headers:");
@@ -186,7 +186,7 @@ async fn execute_request_internal(
                 }
             }
         }
-        eprintln!("\x1b[33;1m-------------------\x1b[0m");
+        eprintln!("{}", "-------------------".yellow().bold());
     }
 
     let response = client.execute(request).await?;
@@ -197,7 +197,7 @@ async fn execute_request_internal(
     let body = body_bytes.to_vec();
 
     if debug {
-        eprintln!("\n\x1b[32;1m--- API Response ---\x1b[0m");
+        eprintln!("\n{}", "--- API Response ---".green().bold());
         eprintln!("Status: {}", status);
         eprintln!("Headers:");
         for (name, value) in &headers {
@@ -208,7 +208,7 @@ async fn execute_request_internal(
         } else {
             eprintln!("Body: <binary/non-utf8>");
         }
-        eprintln!("\x1b[32;1m--------------------\x1b[0m");
+        eprintln!("{}", "--------------------".green().bold());
     }
 
     Ok(ApiResponse {
@@ -362,7 +362,8 @@ impl ApiClient {
     pub async fn load_code_assist(
         &mut self,
     ) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
-        let cache_path = crate::config::get_account_dir(&self.tokens.email).join("code_assist_cache.json");
+        let cache_path =
+            crate::config::get_account_dir(&self.tokens.email).join("code_assist_cache.json");
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cache_ttl = 5 * 60 * 1000; // 5 minutes
 
@@ -409,7 +410,6 @@ impl ApiClient {
 
         Ok(parsed)
     }
-
 
     pub async fn retrieve_user_quota_summary(
         &mut self,
