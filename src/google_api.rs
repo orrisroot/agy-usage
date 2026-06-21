@@ -608,109 +608,102 @@ impl ApiClient {
             },
         };
 
-        let base_urls = [
-            "https://cloudcode-pa.googleapis.com",
-            "https://daily-cloudcode-pa.sandbox.googleapis.com",
-        ];
-
         let stream_path = "/v1internal:streamGenerateContent?alt=sse";
 
         let mut last_error = None;
 
-        for base_url in &base_urls {
-            let url = format!("{}{}", base_url, stream_path);
+        let url = format!("{}{}", CLOUDCODE_BASE_URL, stream_path);
 
-            // Retry logic: 3 attempts per URL
-            for attempt in 1..=3 {
-                if attempt > 1 {
-                    // Backoff delay
-                    let delay = 500 * (1 << (attempt - 2)) + rand::rng().random_range(0..100);
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
+        // Retry logic: 3 attempts per URL
+        for attempt in 1..=3 {
+            if attempt > 1 {
+                // Backoff delay
+                let delay = 500 * (1 << (attempt - 2)) + rand::rng().random_range(0..100);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
 
-                let access_token = self.ensure_valid_token().await?;
-                let client = self.client.clone();
-                let builder = client
-                    .post(&url)
-                    .bearer_auth(access_token)
-                    .header("User-Agent", USER_AGENT)
-                    .header("Content-Type", "application/json")
-                    .header("Accept-Encoding", "gzip")
-                    .json(&payload);
+            let access_token = self.ensure_valid_token().await?;
+            let client = self.client.clone();
+            let builder = client
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("User-Agent", USER_AGENT)
+                .header("Content-Type", "application/json")
+                .header("Accept-Encoding", "gzip")
+                .json(&payload);
 
-                let payload_str = serde_json::to_string(&payload).unwrap_or_default();
-                match self.execute_request(builder, Some(payload_str)).await {
-                    Ok(res) => {
-                        let status = res.status;
-                        if status.is_success() {
-                            let text = res.text();
-                            // Parse SSE response
-                            let mut full_text = String::new();
-                            let mut usage = None;
+            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+            match self.execute_request(builder, Some(payload_str)).await {
+                Ok(res) => {
+                    let status = res.status;
+                    if status.is_success() {
+                        let text = res.text();
+                        // Parse SSE response
+                        let mut full_text = String::new();
+                        let mut usage = None;
 
-                            for line in text.lines() {
-                                if line.starts_with("data: ") {
-                                    let json_str = &line[6..];
-                                    if json_str.trim() == "[DONE]" {
-                                        continue;
-                                    }
-                                    if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
-                                        let candidates = root
-                                            .response
-                                            .as_ref()
-                                            .and_then(|r| r.candidates.as_ref())
-                                            .or(root.candidates.as_ref());
-                                        if let Some(candidates) = candidates {
-                                            for cand in candidates {
-                                                if let Some(ref content) = cand.content {
-                                                    if let Some(ref parts) = content.parts {
-                                                        for part in parts {
-                                                            if let Some(ref t) = part.text {
-                                                                full_text.push_str(t);
-                                                            }
+                        for line in text.lines() {
+                            if line.starts_with("data: ") {
+                                let json_str = &line[6..];
+                                if json_str.trim() == "[DONE]" {
+                                    continue;
+                                }
+                                if let Ok(root) = serde_json::from_str::<SSERoot>(json_str) {
+                                    let candidates = root
+                                        .response
+                                        .as_ref()
+                                        .and_then(|r| r.candidates.as_ref())
+                                        .or(root.candidates.as_ref());
+                                    if let Some(candidates) = candidates {
+                                        for cand in candidates {
+                                            if let Some(ref content) = cand.content {
+                                                if let Some(ref parts) = content.parts {
+                                                    for part in parts {
+                                                        if let Some(ref t) = part.text {
+                                                            full_text.push_str(t);
                                                         }
                                                     }
                                                 }
                                             }
                                         }
-                                        let metadata = root
-                                            .response
-                                            .as_ref()
-                                            .and_then(|r| r.usage_metadata.as_ref())
-                                            .or(root.usage_metadata.as_ref());
-                                        if let Some(m) = metadata {
-                                            usage = Some(TriggerTokenUsage {
-                                                prompt: m.prompt_token_count.unwrap_or(0),
-                                                completion: m.candidates_token_count.unwrap_or(0),
-                                                total: m.total_token_count.unwrap_or(0),
-                                            });
-                                        }
+                                    }
+                                    let metadata = root
+                                        .response
+                                        .as_ref()
+                                        .and_then(|r| r.usage_metadata.as_ref())
+                                        .or(root.usage_metadata.as_ref());
+                                    if let Some(m) = metadata {
+                                        usage = Some(TriggerTokenUsage {
+                                            prompt: m.prompt_token_count.unwrap_or(0),
+                                            completion: m.candidates_token_count.unwrap_or(0),
+                                            total: m.total_token_count.unwrap_or(0),
+                                        });
                                     }
                                 }
                             }
+                        }
 
-                            return Ok(TriggerResult {
-                                success: true,
-                                duration_ms: start_time.elapsed().as_millis(),
-                                text: full_text,
-                                token_usage: usage,
-                                error: None,
-                            });
+                        return Ok(TriggerResult {
+                            success: true,
+                            duration_ms: start_time.elapsed().as_millis(),
+                            text: full_text,
+                            token_usage: usage,
+                            error: None,
+                        });
+                    } else {
+                        let err_text = res.text();
+                        last_error = Some(format!("HTTP {} - {}", status, err_text));
+                        if status == 429 || status.is_server_error() {
+                            // Retry
+                            continue;
                         } else {
-                            let err_text = res.text();
-                            last_error = Some(format!("HTTP {} - {}", status, err_text));
-                            if status == 429 || status.is_server_error() {
-                                // Retry
-                                continue;
-                            } else {
-                                // Non-retryable error
-                                break;
-                            }
+                            // Non-retryable error
+                            break;
                         }
                     }
-                    Err(e) => {
-                        last_error = Some(e.to_string());
-                    }
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string());
                 }
             }
         }
