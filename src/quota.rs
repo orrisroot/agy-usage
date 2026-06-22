@@ -107,7 +107,7 @@ fn format_remaining(fraction: Option<f64>, is_exhausted: bool) -> String {
     }
     match fraction {
         Some(f) => {
-            let pct = (f * 100.0).floor() as i32;
+            let pct = (f * 100.0).round() as i32;
             let clamped_f = f.clamp(0.0, 1.0);
 
             let total_steps = bar_len * 8;
@@ -571,5 +571,25 @@ mod tests {
             format_reset_time(&hours_49.to_rfc3339()),
             format!("{} - 2d 1h 1m", local_fmt(hours_49))
         );
+    }
+
+    #[test]
+    fn test_format_remaining() {
+        // Test that remaining percentage is rounded to the nearest integer
+        // 12.34% -> 12% (0.1234)
+        let formatted_12_3 = format_remaining(Some(0.1234), false);
+        assert!(strip_ansi_codes(&formatted_12_3).contains(" 12%"));
+
+        // 12.56% -> 13% (0.1256)
+        let formatted_12_6 = format_remaining(Some(0.1256), false);
+        assert!(strip_ansi_codes(&formatted_12_6).contains(" 13%"));
+
+        // 12.5% -> 13% (0.125)
+        let formatted_12_5 = format_remaining(Some(0.125), false);
+        assert!(strip_ansi_codes(&formatted_12_5).contains(" 13%"));
+
+        // 12.49% -> 12% (0.1249)
+        let formatted_12_49 = format_remaining(Some(0.1249), false);
+        assert!(strip_ansi_codes(&formatted_12_49).contains(" 12%"));
     }
 }
