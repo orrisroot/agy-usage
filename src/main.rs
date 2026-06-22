@@ -8,6 +8,7 @@ mod wakeup;
 
 #[derive(Parser)]
 #[command(name = "agy-usage")]
+#[command(version)]
 #[command(about = "CLI tool to track Antigravity model quota and usage", long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -104,6 +105,8 @@ enum Commands {
     },
     /// Update the CLI to the latest version
     SelfUpdate,
+    /// Show the current version of the CLI
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -322,6 +325,9 @@ async fn main() {
                 eprintln!("{} Self-update failed: {}", "Error:".red().bold(), e);
                 std::process::exit(1);
             }
+        }
+        Some(Commands::Version) => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         }
         None => {
             let quota_opts = quota::QuotaOptions {

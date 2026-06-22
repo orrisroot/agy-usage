@@ -202,7 +202,22 @@ agy-usage self-update
 
 This command automatically checks for new releases on GitHub, downloads the correct binary for your operating system and architecture, and replaces the running executable in-place.
 
-### 7. Logging Out
+### 7. Version
+
+Show the current version of the CLI tool.
+
+```bash
+agy-usage version
+```
+
+You can also use the standard flags `-V` or `--version` to display the version:
+
+```bash
+agy-usage -V
+agy-usage --version
+```
+
+### 8. Logging Out
 
 Log out from one or all accounts.
 
