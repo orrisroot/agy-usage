@@ -102,8 +102,8 @@ fn format_reset_time(reset_time_str: &str) -> String {
 fn format_remaining(fraction: Option<f64>, is_exhausted: bool) -> String {
     let bar_len = 15;
     if is_exhausted {
-        let bar = "░".repeat(bar_len);
-        return format!("[{}] EXHAUSTED", bar).red().bold().to_string();
+        let bar = "░░░EXHAUSTED░░░";
+        return format!("[{}] {:>3}%", bar, 0).red().bold().to_string();
     }
     match fraction {
         Some(f) => {
@@ -225,8 +225,8 @@ fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Ve
         .unwrap_or("Unknown Bucket");
 
     let rem_pct = if bucket.disabled == Some(true) {
-        let bar = "█".repeat(15);
-        format!("[{}] Unlimited", bar).green().to_string()
+        let bar = "███UNLIMITED███";
+        format!("[{}]  N/A", bar).green().bold().to_string()
     } else {
         let is_exhausted = bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
         format_remaining(bucket.remaining_fraction, is_exhausted)
@@ -591,5 +591,12 @@ mod tests {
         // 12.49% -> 12% (0.1249)
         let formatted_12_49 = format_remaining(Some(0.1249), false);
         assert!(strip_ansi_codes(&formatted_12_49).contains(" 12%"));
+
+        // Exhausted status
+        let formatted_exhausted = format_remaining(Some(0.0), true);
+        assert_eq!(
+            strip_ansi_codes(&formatted_exhausted),
+            "[░░░EXHAUSTED░░░]   0%"
+        );
     }
 }
