@@ -30,7 +30,11 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     };
 
     println!("Checking authentication status...");
-    let mut api_client = ApiClient::new(tokens, options.debug);
+    let mut api_client = ApiClient::new(
+        tokens,
+        Box::new(crate::config::FileTokenStorage),
+        options.debug,
+    );
 
     // Resolve project ID (automatically handles onboarding & dirty state if needed)
     let project_id = api_client.resolve_project_id(false).await;
@@ -51,7 +55,7 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     let trigger_prompt = options.prompt.unwrap_or_else(|| ".".to_string());
 
     let cache_path =
-        crate::config::get_account_dir(&api_client.tokens().email).join("wakeup_cache.json");
+        crate::config::get_account_dir(api_client.tokens().email()).join("wakeup_cache.json");
     let mut wakeup_cache = if let Ok(content) = std::fs::read_to_string(&cache_path) {
         serde_json::from_str::<WakeupCache>(&content).unwrap_or_else(|_| WakeupCache {
             history: HashMap::new(),

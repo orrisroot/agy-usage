@@ -318,18 +318,35 @@ pub fn pick_onboard_tier(
     default_tier.map(|s| s.to_string())
 }
 
-#[derive(Clone, Debug)]
+pub trait TokenStorage: std::fmt::Debug + Send + Sync + 'static {
+    fn save_tokens(
+        &self,
+        email: &str,
+        tokens: &StoredTokens,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+    fn read_cache(&self, email: &str, cache_key: &str) -> Option<String>;
+    fn write_cache(
+        &self,
+        email: &str,
+        cache_key: &str,
+        content: &str,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+#[derive(Debug)]
 pub struct ApiClient {
     client: reqwest::Client,
     tokens: StoredTokens,
+    storage: Box<dyn TokenStorage>,
     debug: bool,
 }
 
 impl ApiClient {
-    pub fn new(tokens: StoredTokens, debug: bool) -> Self {
+    pub fn new(tokens: StoredTokens, storage: Box<dyn TokenStorage>, debug: bool) -> Self {
         Self {
             client: reqwest::Client::new(),
             tokens,
+            storage,
             debug,
         }
     }
@@ -342,17 +359,18 @@ impl ApiClient {
         let now = chrono::Utc::now().timestamp_millis() as u64;
         // Expiry buffer is 5 minutes (300,000 ms)
         let buffer = 5 * 60 * 1000;
-        if now >= self.tokens.expires_at - buffer {
+        if now >= self.tokens.expires_at() - buffer {
             // Refresh token
-            let res = refresh_access_token(&self.tokens.refresh_token, self.debug).await?;
-            self.tokens.access_token = res.access_token;
+            let res = refresh_access_token(self.tokens.refresh_token(), self.debug).await?;
+            self.tokens.set_access_token(res.access_token);
             if let Some(rt) = res.refresh_token {
-                self.tokens.refresh_token = rt;
+                self.tokens.set_refresh_token(rt);
             }
-            self.tokens.expires_at = now + res.expires_in * 1000;
-            crate::config::save_account_tokens(&self.tokens.email, &self.tokens)?;
+            self.tokens.set_expires_at(now + res.expires_in * 1000);
+            self.storage
+                .save_tokens(self.tokens.email(), &self.tokens)?;
         }
-        Ok(self.tokens.access_token.clone())
+        Ok(self.tokens.access_token().to_string())
     }
 
     async fn execute_request(
@@ -367,13 +385,11 @@ impl ApiClient {
         &mut self,
         force: bool,
     ) -> Result<LoadCodeAssistResponse, Box<dyn std::error::Error>> {
-        let cache_path =
-            crate::config::get_account_dir(&self.tokens.email).join("code_assist_cache.json");
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cache_ttl = 5 * 60 * 1000; // 5 minutes
 
         if !force
-            && let Ok(content) = std::fs::read_to_string(&cache_path)
+            && let Some(content) = self.storage.read_cache(self.tokens.email(), "code_assist")
             && let Ok(cached) = serde_json::from_str::<CachedCodeAssist>(&content)
             && now < cached.fetched_at + cache_ttl
         {
@@ -407,10 +423,13 @@ impl ApiClient {
             response: parsed.clone(),
             fetched_at: now,
         };
-        if let Ok(content) = serde_json::to_string(&cached)
-            && let Err(e) = std::fs::write(&cache_path, content)
-        {
-            eprintln!("Warning: Failed to write code assist cache: {}", e);
+        if let Ok(content) = serde_json::to_string(&cached) {
+            if let Err(e) = self
+                .storage
+                .write_cache(self.tokens.email(), "code_assist", &content)
+            {
+                eprintln!("Warning: Failed to write code assist cache: {}", e);
+            }
         }
 
         Ok(parsed)
@@ -420,13 +439,13 @@ impl ApiClient {
         &mut self,
         force: bool,
     ) -> Result<RetrieveUserQuotaSummaryResponse, Box<dyn std::error::Error>> {
-        let cache_path =
-            crate::config::get_account_dir(&self.tokens.email).join("quota_summary_cache.json");
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let cache_ttl = 5 * 60 * 1000; // 5 minutes
 
         if !force
-            && let Ok(content) = std::fs::read_to_string(&cache_path)
+            && let Some(content) = self
+                .storage
+                .read_cache(self.tokens.email(), "quota_summary")
             && let Ok(cached) = serde_json::from_str::<CachedQuotaSummary>(&content)
             && now < cached.fetched_at + cache_ttl
         {
@@ -434,7 +453,7 @@ impl ApiClient {
         }
 
         let access_token = self.ensure_valid_token().await?;
-        let payload = if let Some(ref proj) = self.tokens.project_id {
+        let payload = if let Some(proj) = self.tokens.project_id() {
             serde_json::json!({ "project": proj })
         } else {
             serde_json::json!({})
@@ -461,10 +480,13 @@ impl ApiClient {
             response: parsed.clone(),
             fetched_at: now,
         };
-        if let Ok(content) = serde_json::to_string(&cached)
-            && let Err(e) = std::fs::write(&cache_path, content)
-        {
-            eprintln!("Warning: Failed to write quota summary cache: {}", e);
+        if let Ok(content) = serde_json::to_string(&cached) {
+            if let Err(e) = self
+                .storage
+                .write_cache(self.tokens.email(), "quota_summary", &content)
+            {
+                eprintln!("Warning: Failed to write quota summary cache: {}", e);
+            }
         }
 
         Ok(parsed)
@@ -515,7 +537,7 @@ impl ApiClient {
     }
 
     pub async fn resolve_project_id(&mut self, force: bool) -> Option<String> {
-        let cached_p = self.tokens.project_id.clone();
+        let cached_p = self.tokens.project_id().map(String::from);
 
         let load_resp = match self.load_code_assist(force).await {
             Ok(resp) => resp,
@@ -543,8 +565,8 @@ impl ApiClient {
             && let Some(p) = extract_project_id(proj_val)
         {
             if Some(&p) != cached_p.as_ref() {
-                self.tokens.project_id = Some(p.clone());
-                let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
+                self.tokens.set_project_id(Some(p.clone()));
+                let _ = self.storage.save_tokens(self.tokens.email(), &self.tokens);
             }
             return Some(p);
         }
@@ -553,8 +575,8 @@ impl ApiClient {
         let onboard_tier = pick_onboard_tier(&load_resp, target_tier_id.as_deref())?;
 
         if let Ok(Some(proj_id)) = self.try_onboard_user(&onboard_tier).await {
-            self.tokens.project_id = Some(proj_id.clone());
-            let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
+            self.tokens.set_project_id(Some(proj_id.clone()));
+            let _ = self.storage.save_tokens(self.tokens.email(), &self.tokens);
             return Some(proj_id);
         }
 
@@ -565,8 +587,8 @@ impl ApiClient {
                 && let Some(ref proj_val) = resp.cloudaicompanion_project
                 && let Some(p) = extract_project_id(proj_val)
             {
-                self.tokens.project_id = Some(p.clone());
-                let _ = crate::config::save_account_tokens(&self.tokens.email, &self.tokens);
+                self.tokens.set_project_id(Some(p.clone()));
+                let _ = self.storage.save_tokens(self.tokens.email(), &self.tokens);
                 return Some(p);
             }
         }

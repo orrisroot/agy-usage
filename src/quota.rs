@@ -28,7 +28,11 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
     };
 
     eprintln!("Checking authentication status...");
-    let mut api_client = ApiClient::new(tokens, options.debug);
+    let mut api_client = ApiClient::new(
+        tokens,
+        Box::new(crate::config::FileTokenStorage),
+        options.debug,
+    );
 
     eprintln!("Fetching quota information from Google API...");
     let code_assist = api_client.load_code_assist(options.force).await?;
@@ -46,20 +50,20 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
 
     if options.json {
         print_json(
-            &api_client.tokens().email,
+            api_client.tokens().email(),
             &code_assist,
             &quota_summary_resp,
         );
     } else if std::io::stdout().is_terminal() {
         eprintln!(); // Print the separating newline to stderr
         print_pretty(
-            &api_client.tokens().email,
+            api_client.tokens().email(),
             &code_assist,
             &quota_summary_resp,
         );
     } else {
         print_markdown(
-            &api_client.tokens().email,
+            api_client.tokens().email(),
             &code_assist,
             &quota_summary_resp,
         );

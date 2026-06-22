@@ -133,7 +133,13 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
     let timeout_duration = Duration::from_secs(120);
     let code_result = tokio::time::timeout(timeout_duration, async {
         loop {
-            let (mut socket, _) = listener.accept().await.unwrap();
+            let (mut socket, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    eprintln!("Warning: Failed to accept connection: {}", e);
+                    continue;
+                }
+            };
             let mut buf = [0u8; 4096];
             match socket.read(&mut buf).await {
                 Ok(n) if n > 0 => {
@@ -223,16 +229,20 @@ async fn complete_login(
     let email = get_user_email(&token_resp.access_token, false).await?;
 
     let now = chrono::Utc::now().timestamp_millis() as u64;
-    let initial_tokens = StoredTokens {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp.refresh_token.unwrap_or_default(),
-        expires_at: now + token_resp.expires_in * 1000,
-        email: email.clone(),
-        project_id: None,
-    };
+    let initial_tokens = StoredTokens::new(
+        token_resp.access_token,
+        token_resp.refresh_token.unwrap_or_default(),
+        now + token_resp.expires_in * 1000,
+        email.clone(),
+        None,
+    );
 
     println!("Resolving project ID...");
-    let mut api_client = ApiClient::new(initial_tokens, false);
+    let mut api_client = ApiClient::new(
+        initial_tokens,
+        Box::new(crate::config::FileTokenStorage),
+        false,
+    );
     let _ = api_client.resolve_project_id(false).await;
     let tokens = api_client.tokens().clone();
 
