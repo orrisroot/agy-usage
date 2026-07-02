@@ -110,6 +110,12 @@ pub struct CachedQuotaSummary {
     pub fetched_at: u64,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CachedAvailableModels {
+    pub response: serde_json::Value,
+    pub fetched_at: u64,
+}
+
 pub fn extract_project_id(val: &serde_json::Value) -> Option<String> {
     match val {
         serde_json::Value::String(s) => Some(s.clone()),
@@ -596,6 +602,56 @@ impl ApiClient {
         None
     }
 
+    pub async fn fetch_available_models(
+        &mut self,
+        force: bool,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let cache_ttl = 5 * 60 * 1000; // 5 minutes
+
+        if !force
+            && let Some(content) = self
+                .storage
+                .read_cache(self.tokens.email(), "available_models")
+            && let Ok(cached) = serde_json::from_str::<CachedAvailableModels>(&content)
+            && now < cached.fetched_at + cache_ttl
+        {
+            return Ok(cached.response);
+        }
+
+        let access_token = self.ensure_valid_token().await?;
+        let payload = serde_json::json!({});
+
+        let client = self.client.clone();
+        let builder = client
+            .post(format!(
+                "{}/v1internal:fetchAvailableModels",
+                CLOUDCODE_BASE_URL
+            ))
+            .bearer_auth(access_token)
+            .header("User-Agent", USER_AGENT)
+            .json(&payload);
+
+        let res = self
+            .execute_request(builder, Some(payload.to_string()))
+            .await?;
+        let res = res.error_for_status()?;
+        let parsed = res.json::<serde_json::Value>()?;
+
+        // Save to cache
+        let cached = CachedAvailableModels {
+            response: parsed.clone(),
+            fetched_at: now,
+        };
+        if let Ok(content) = serde_json::to_string(&cached) {
+            let _ = self
+                .storage
+                .write_cache(self.tokens.email(), "available_models", &content);
+        }
+
+        Ok(parsed)
+    }
+
     pub async fn trigger_model(
         &mut self,
         options: &TriggerOptions,
@@ -984,5 +1040,13 @@ mod tests {
         assert_eq!(params.get("client_id").unwrap(), "123");
         assert_eq!(params.get("client_secret").unwrap(), "***");
         assert_eq!(params.get("other").unwrap(), "val");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_available_models() {
+        let tokens = crate::config::get_active_account_tokens().expect("No active account tokens");
+        let mut client = ApiClient::new(tokens, Box::new(crate::config::FileTokenStorage), true);
+        let res = client.fetch_available_models(true).await.unwrap();
+        assert!(res.get("models").is_some());
     }
 }

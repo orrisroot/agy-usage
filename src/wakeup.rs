@@ -40,11 +40,81 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     let project_id = api_client.resolve_project_id(false).await;
 
     // Determine target models
-    let default_models = vec![
-        "gpt-oss-120b-medium".to_string(),
-        "gemini-3.5-flash-extra-low".to_string(),
-    ];
-    let validated_models = options.models.unwrap_or(default_models);
+    let validated_models = if let Some(models) = options.models {
+        models
+    } else {
+        println!("Resolving available models from API...");
+        match api_client.fetch_available_models(false).await {
+            Ok(available) => {
+                let model_ids: Vec<String> = available
+                    .get("agentModelSorts")
+                    .and_then(|sorts| sorts.as_array())
+                    .and_then(|sorts_arr| sorts_arr.first())
+                    .and_then(|first_sort| first_sort.get("groups"))
+                    .and_then(|groups| groups.as_array())
+                    .and_then(|groups_arr| groups_arr.first())
+                    .and_then(|first_group| first_group.get("modelIds"))
+                    .and_then(|model_ids_val| model_ids_val.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|val| val.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if model_ids.is_empty() {
+                    vec![
+                        "gpt-oss-120b-medium".to_string(),
+                        "gemini-3.5-flash-extra-low".to_string(),
+                    ]
+                } else {
+                    let mut gemini_list = Vec::new();
+                    let mut other_list = Vec::new();
+
+                    for id in model_ids {
+                        if id.contains("gemini") {
+                            gemini_list.push(id);
+                        } else {
+                            other_list.push(id);
+                        }
+                    }
+
+                    let mut selected = Vec::new();
+                    if !gemini_list.is_empty() {
+                        gemini_list.sort_by_key(|id| get_model_cost_score(id));
+                        if let Some(cheapest_gemini) = gemini_list.first() {
+                            selected.push(cheapest_gemini.clone());
+                        }
+                    }
+                    if !other_list.is_empty() {
+                        other_list.sort_by_key(|id| get_model_cost_score(id));
+                        if let Some(cheapest_other) = other_list.first() {
+                            selected.push(cheapest_other.clone());
+                        }
+                    }
+
+                    if selected.is_empty() {
+                        vec![
+                            "gpt-oss-120b-medium".to_string(),
+                            "gemini-3.5-flash-extra-low".to_string(),
+                        ]
+                    } else {
+                        selected
+                    }
+                }
+            }
+            Err(e) => {
+                println!(
+                    "Warning: Failed to fetch available models ({}), using hardcoded defaults.",
+                    e
+                );
+                vec![
+                    "gpt-oss-120b-medium".to_string(),
+                    "gemini-3.5-flash-extra-low".to_string(),
+                ]
+            }
+        }
+    };
 
     if validated_models.is_empty() {
         println!("No models to trigger.");
@@ -133,4 +203,47 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
 
     println!("\n✨ Wakeup/Trigger cycle complete.");
     Ok(())
+}
+
+fn get_model_cost_score(model_id: &str) -> u32 {
+    let mut score = 0;
+
+    // 1. Model family/provider base cost
+    if model_id.contains("gemini") {
+        if model_id.contains("flash") {
+            score += 10;
+        } else if model_id.contains("pro") {
+            score += 20;
+        } else {
+            score += 15;
+        }
+    } else {
+        if model_id.contains("gpt-oss") {
+            score += 10;
+        } else if model_id.contains("sonnet") {
+            score += 30;
+        } else if model_id.contains("opus") {
+            score += 50;
+        } else {
+            score += 40;
+        }
+    }
+
+    // 2. Specific tier suffix cost adjustment
+    if model_id.contains("extra-low") || model_id.contains("lite") {
+        score += 1;
+    } else if model_id.contains("low") {
+        score += 2;
+    } else if model_id.contains("medium") {
+        score += 3;
+    } else if model_id.contains("high")
+        || model_id.contains("thinking")
+        || model_id.contains("agent")
+    {
+        score += 4;
+    } else {
+        score += 3;
+    }
+
+    score
 }

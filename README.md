@@ -76,13 +76,15 @@ agy-usage quota --json
 
 ### 4. Wakeup Trigger
 
-Trigger models to start quota limitation timers or wake them up. To prevent excessive API requests and save your quota, `wakeup` implements a 5-minute cache per model. If triggered multiple times within 5 minutes, subsequent calls will be skipped.
+Trigger models to start quota limitation timers or wake them up. By default, the tool queries the backend for available chat/agent models and automatically selects the most cost-effective model from both the Gemini group and the other (Claude/GPT) group to trigger, minimizing quota consumption.
+
+To prevent excessive API requests and save your quota, `wakeup` implements a 5-minute cache per model. If triggered multiple times within 5 minutes, subsequent calls will be skipped.
 
 ```bash
-# Trigger wakeup for default models
+# Trigger wakeup for dynamically resolved cheapest models
 agy-usage wakeup
 
-# Specify models and a custom prompt
+# Specify models manually and use a custom prompt
 agy-usage wakeup --models gemini-3.1-pro-low,claude-sonnet-4-6 --prompt "Hello"
 
 # Retain the original long system prompt
@@ -234,6 +236,9 @@ agy-usage logout user@example.com
 agy-usage logout --all
 ```
 
+## Changelog
+
+Please see [CHANGELOG.md](CHANGELOG.md) for the release history.
 
 ## License
 
