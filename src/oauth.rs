@@ -19,6 +19,20 @@ fn generate_state() -> String {
         .collect()
 }
 
+fn html_escape(input: &str) -> String {
+    input.chars().fold(String::new(), |mut acc, c| {
+        match c {
+            '&' => acc.push_str("&amp;"),
+            '<' => acc.push_str("&lt;"),
+            '>' => acc.push_str("&gt;"),
+            '"' => acc.push_str("&quot;"),
+            '\'' => acc.push_str("&#x27;"),
+            _ => acc.push(c),
+        }
+        acc
+    })
+}
+
 async fn send_response(
     socket: &mut tokio::net::TcpStream,
     status_code: u16,
@@ -153,7 +167,7 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                                     let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
 
                                     if let Some(err) = params.get("error") {
-                                        let html = format!("<html><body><h1>Login Failed</h1><p>Google returned error: {}</p></body></html>", err);
+                                        let html = format!("<html><body><h1>Login Failed</h1><p>Google returned error: {}</p></body></html>", html_escape(err));
                                         let _ = send_response(&mut socket, 400, &html).await;
                                         return Err(format!("Google error: {}", err));
                                     }
@@ -191,13 +205,13 @@ pub async fn run_login(options: LoginOptions) -> Result<String, Box<dyn std::err
                                                  <p>You are now logged in as <strong>{}</strong>.</p>\
                                                  <p>You can close this window and return to the terminal.</p>\
                                                  </body></html>",
-                                                email
+                                                html_escape(&email)
                                             );
                                             let _ = send_response(&mut socket, 200, &html).await;
                                             return Ok(email);
                                         }
                                         Err(err) => {
-                                            let html = format!("<html><body><h1>Login Failed</h1><p>Token processing error: {}</p></body></html>", err);
+                                            let html = format!("<html><body><h1>Login Failed</h1><p>Token processing error: {}</p></body></html>", html_escape(&err.to_string()));
                                             let _ = send_response(&mut socket, 500, &html).await;
                                             return Err(err.to_string());
                                         }
@@ -254,4 +268,15 @@ async fn complete_login(
     save_global_config(&global)?;
 
     Ok(email)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("<script>alert('xss')</script>"), "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;");
+        assert_eq!(html_escape("a & b \"c\""), "a &amp; b &quot;c&quot;");
+    }
 }

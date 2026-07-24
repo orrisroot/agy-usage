@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+mod api;
 mod config;
 mod google_api;
 mod oauth;
 mod quota;
+mod storage;
 mod wakeup;
 
 #[derive(Parser)]

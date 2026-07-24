@@ -1,5 +1,6 @@
 use crate::config::get_active_account_tokens;
 use crate::google_api::{ApiClient, TriggerOptions};
+use crate::storage::StorageProvider;
 use std::collections::HashMap;
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -70,9 +71,9 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     // Default trigger prompt is a single character for extreme token saving
     let trigger_prompt = options.prompt.unwrap_or_else(|| ".".to_string());
 
-    let cache_path =
-        crate::config::get_account_dir(api_client.tokens().email()).join("wakeup_cache.json");
-    let mut wakeup_cache = if let Ok(content) = std::fs::read_to_string(&cache_path) {
+    let storage = crate::storage::FileStorage;
+    let email = api_client.tokens().email().to_string();
+    let mut wakeup_cache = if let Some(content) = storage.read_cache(&email, "wakeup") {
         serde_json::from_str::<WakeupCache>(&content).unwrap_or_else(|_| WakeupCache {
             history: HashMap::new(),
         })
@@ -141,10 +142,10 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
         }
     }
 
-    if let Ok(content) = serde_json::to_string_pretty(&wakeup_cache)
-        && let Err(e) = std::fs::write(&cache_path, content)
-    {
-        eprintln!("Warning: Failed to write wakeup cache: {}", e);
+    if let Ok(content) = serde_json::to_string_pretty(&wakeup_cache) {
+        if let Err(e) = storage.write_cache(&email, "wakeup", &content) {
+            eprintln!("Warning: Failed to write wakeup cache: {}", e);
+        }
     }
 
     println!("\n✨ Wakeup/Trigger cycle complete.");

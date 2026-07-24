@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{create_dir_all, read_to_string, remove_dir_all};
+use std::fs::{read_to_string, remove_dir_all};
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -96,59 +96,7 @@ pub fn load_global_config() -> GlobalConfig {
 pub fn save_global_config(config: &GlobalConfig) -> Result<(), std::io::Error> {
     let path = get_global_config_path();
     let content = serde_json::to_string_pretty(config)?;
-    write_atomically(&path, &content, None)?;
-    Ok(())
-}
-
-fn write_atomically(
-    path: &std::path::Path,
-    content: &str,
-    mode: Option<u32>,
-) -> Result<(), std::io::Error> {
-    let dir = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Path must have a parent directory",
-        )
-    })?;
-    create_dir_all(dir)?;
-
-    let file_name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Path must have a file name",
-        )
-    })?;
-    let tmp_name = format!("{}.tmp", file_name.to_string_lossy());
-    let tmp_path = dir.join(tmp_name);
-
-    #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        if let Some(m) = mode {
-            options.mode(m);
-        }
-        let mut file = options.open(&tmp_path)?;
-        use std::io::Write;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = mode;
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        let mut file = options.open(&tmp_path)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-    }
-
-    std::fs::rename(&tmp_path, path)?;
+    crate::storage::write_atomically(&path, &content, None)?;
     Ok(())
 }
 
@@ -184,7 +132,7 @@ pub fn save_account_tokens(email: &str, tokens: &StoredTokens) -> Result<(), std
     let dir = get_account_dir(email);
     let path = dir.join("tokens.json");
     let content = serde_json::to_string_pretty(tokens)?;
-    write_atomically(&path, &content, Some(0o600))?;
+    crate::storage::write_atomically(&path, &content, Some(0o600))?;
     Ok(())
 }
 
@@ -235,32 +183,4 @@ pub fn remove_account(email: &str) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct FileTokenStorage;
-
-impl crate::google_api::TokenStorage for FileTokenStorage {
-    fn save_tokens(
-        &self,
-        email: &str,
-        tokens: &StoredTokens,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        save_account_tokens(email, tokens)?;
-        Ok(())
-    }
-
-    fn read_cache(&self, email: &str, cache_key: &str) -> Option<String> {
-        let cache_path = get_account_dir(email).join(format!("{}_cache.json", cache_key));
-        std::fs::read_to_string(cache_path).ok()
-    }
-
-    fn write_cache(
-        &self,
-        email: &str,
-        cache_key: &str,
-        content: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let cache_path = get_account_dir(email).join(format!("{}_cache.json", cache_key));
-        write_atomically(&cache_path, content, None)?;
-        Ok(())
-    }
-}
+pub use crate::storage::FileStorage as FileTokenStorage;
