@@ -9,10 +9,11 @@
 - **Quota Information Display**: Fetch and display real-time model usage limits and quotas in your terminal. Output automatically falls back to Markdown format when piped or redirected, making it CI/CD and script-friendly. JSON output format is also supported.
 - **Wakeup Functionality**: Trigger models to initiate quota limitation timers or wake up the model.
 - **Robust Architecture & Security Design**: Engineered with high reliability and security standards, featuring:
-  - **Decoupled Caching & Storage**: Abstraction of local filesystem access behind a `TokenStorage` trait, completely decoupling the `ApiClient`'s network logic from physical storage layout.
+  - **Decoupled Caching & Storage**: Abstraction of local filesystem access behind a `StorageProvider` trait, completely decoupling the `ApiClient`'s network logic from physical storage layout and enforcing path key sanitization.
+  - **Modular API Client Architecture**: Structured API logic split into specialized `src/api/` submodules (`client`, `types`, `sanitizer`) for clean separation of concerns and high testability.
   - **Strict Encapsulation**: Private credential field structures managed through accessors to enforce OAuth2 parameter invariants and block uncontrolled mutations.
   - **Atomic & Durable Writes**: Token/config files are saved by writing to a temporary file first, flushing securely to physical disk (`sync_all`), and renaming atomically to prevent session corruption on crash or power loss.
-  - **Fault-Tolerant Login Callback Server**: Loopback listener handles socket connection accept errors gracefully instead of panicking.
+  - **Fault-Tolerant Login Callback Server**: Loopback listener handles connection accept errors gracefully and applies HTML escaping to response content to prevent injection vulnerabilities.
 
 ## Installation / Build
 
