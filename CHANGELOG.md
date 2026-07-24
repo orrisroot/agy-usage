@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented below, grouped by release version.
 
+### [0.1.9] - 2026-07-25
+- Fixed model extraction in `wakeup` command to traverse all model groups and sort types returned by `fetchAvailableModels`, preventing Gemini models in secondary groups from being skipped.
+- Updated the default fallback Gemini model to `gemini-3.6-flash-low`.
+- Improved model cost scoring (`get_model_cost_score`) with version-based preference to prioritize Gemini 3.6 models.
+- Added automatic filtering of deprecated model IDs (`deprecatedModelIds`) during model resolution.
+- Removed legacy `extra-low` tier matching from cost score evaluation.
+
 ### [0.1.8] - 2026-07-03
 - Added dynamic model selection for the `wakeup` command.
 - Integrated the internal `/v1internal:fetchAvailableModels` API endpoint in `ApiClient` to retrieve active agent models.
