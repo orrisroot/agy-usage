@@ -1,6 +1,6 @@
+use crate::config::{StoredTokens, get_account_dir, save_account_tokens};
 use std::fs::{create_dir_all, read_to_string};
 use std::path::Path;
-use crate::config::{get_account_dir, StoredTokens, save_account_tokens};
 
 pub trait StorageProvider: std::fmt::Debug + Send + Sync + 'static {
     fn save_tokens(
@@ -21,7 +21,13 @@ pub trait StorageProvider: std::fmt::Debug + Send + Sync + 'static {
 
 pub fn sanitize_key(key: &str) -> String {
     key.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -50,8 +56,8 @@ pub fn write_atomically(
     #[cfg(unix)]
     {
         use std::fs::OpenOptions;
-        use std::os::unix::fs::OpenOptionsExt;
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
 
         let mut options = OpenOptions::new();
         options.write(true).create(true).truncate(true);

@@ -222,11 +222,17 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
 
 /// Helper to format a single QuotaSummaryBucket into table row fields.
 fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Vec<String> {
-    let name = bucket
+    let raw_name = bucket
         .display_name
         .as_deref()
         .or(bucket.bucket_id.as_deref())
         .unwrap_or("Unknown Bucket");
+
+    let name = raw_name
+        .strip_suffix(" Remaining")
+        .or_else(|| raw_name.strip_suffix("Remaining"))
+        .unwrap_or(raw_name)
+        .trim();
 
     let rem_pct = if bucket.disabled == Some(true) {
         let bar = "███UNLIMITED███";
@@ -602,5 +608,36 @@ mod tests {
             strip_ansi_codes(&formatted_exhausted),
             "[░░░EXHAUSTED░░░]   0%"
         );
+    }
+
+    #[test]
+    fn test_format_quota_bucket_row_trims_remaining() {
+        let bucket1 = crate::google_api::QuotaSummaryBucket {
+            bucket_id: None,
+            display_name: Some("Weekly Limit Remaining".to_string()),
+            description: None,
+            window: None,
+            remaining: None,
+            remaining_fraction: Some(1.0),
+            remaining_amount: None,
+            disabled: None,
+            reset_time: None,
+        };
+        let row1 = format_quota_bucket_row(&bucket1);
+        assert_eq!(row1[0], "Weekly Limit");
+
+        let bucket2 = crate::google_api::QuotaSummaryBucket {
+            bucket_id: None,
+            display_name: Some("Five Hour Limit Remaining".to_string()),
+            description: None,
+            window: None,
+            remaining: None,
+            remaining_fraction: Some(1.0),
+            remaining_amount: None,
+            disabled: None,
+            reset_time: None,
+        };
+        let row2 = format_quota_bucket_row(&bucket2);
+        assert_eq!(row2[0], "Five Hour Limit");
     }
 }
