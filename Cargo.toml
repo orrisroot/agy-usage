@@ -1,18 +1,18 @@
 [package]
 name = "agy-usage"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 authors = ["Yoshihiro OKUMURA <orrisroot@gmail.com>"]
 description = "A CLI tool to track Antigravity model quota and usage"
 license = "MIT"
 
 [dependencies]
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.53", features = ["full"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.6", features = ["derive"] }
-open = "5.3"
+open = "5.4"
 url = "2.5"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6.0"

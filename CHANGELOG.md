@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented below, grouped by release version.
 
+## [0.1.10] - 2026-08-13
+- Trimmed trailing `" Remaining"` suffix from quota bucket display names in table output to reduce column width.
+- Added unit test verifying quota bucket display name trimming logic.
+- Updated dependency version constraints in `Cargo.toml` (`tokio` to `1.53`, `open` to `5.4`).
+
 ## [0.1.9] - 2026-07-25
 - Modularized internal API client architecture by splitting monolithic `google_api` module into specialized `src/api/` submodules (`client`, `types`, `sanitizer`).
 - Extracted `StorageProvider` trait and `FileStorage` implementation with path key sanitization to standardize and decouple cache and token storage operations.
