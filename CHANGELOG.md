@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented below, grouped by release version.
 
+## [0.1.11] - 2026-11-07
+
+### Added
+- Added an `agy` CLI wrapper for quota display using `agy -p "/usage" --output-format json`.
+- Added structured parsing of agy usage groups and buckets, with a fallback to the tab-separated `response` text.
+- Added Gemini 4 Argon support and updated model scoring for Gemini 3.x and Claude 5.5 models, including `extra-low` and `tiered` tier adjustments.
+- Added OS keyring support for reading the agy-authenticated account.
+
+### Changed
+- `quota` now renders agy `/usage` output. Markdown fallback and raw JSON output are preserved; plan type and prompt credits are no longer displayed.
+- `wakeup` now discovers models via `agy models`, selects only models returned by it, and triggers them with `agy -p`. Hardcoded fallback models and retired-model detection were removed.
+- `wakeup` now runs a full agy agent turn per model, which increases token consumption.
+- `wakeup` caches triggers per model and agy account for 5 minutes and exits nonzero when any trigger fails.
+- `status` and `accounts list/current` now read the agy account from the OS keyring, falling back to agy's token file when keyring access is unavailable.
+- Quota bucket labels now omit redundant group-name prefixes and fall back to the original label if stripping would empty it.
+- Simplified storage and configuration helpers after removing token-based authentication.
+
+### Removed
+- Removed the `login` and `logout` commands, the OAuth flow, and the Cloud Code API client.
+- Removed the `--account` and `--force` options from the global and quota commands, and `--account` / `--keep-system-prompt` from wakeup.
+- Removed `accounts switch` and `accounts remove`.
+- Removed hardcoded retired-model filtering and hardcoded wakeup fallback models.
+- Removed direct dependencies (`reqwest`, `open`, `url`, `rand`) that were only used by the API client and OAuth flow.
+
+### Fixed
+- `wakeup` and `quota` now surface agy failures with nonzero exit codes.
+- Avoided empty quota bucket labels when a bucket name matches its group name.
+
 ## [0.1.10] - 2026-08-13
 - Trimmed trailing `" Remaining"` suffix from quota bucket display names in table output to reduce column width.
 - Added unit test verifying quota bucket display name trimming logic.

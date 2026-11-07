@@ -1,5 +1,4 @@
-use crate::config::get_active_account_tokens;
-use crate::google_api::{ApiClient, RetrieveUserQuotaSummaryResponse};
+use crate::agy::UsageOutput;
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 use std::io::IsTerminal;
@@ -7,66 +6,19 @@ use unicode_width::UnicodeWidthStr;
 
 pub struct QuotaOptions {
     pub json: bool,
-    pub account: Option<String>,
     pub debug: bool,
-    pub force: bool,
 }
 
 pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let tokens = if let Some(ref email) = options.account {
-        match crate::config::load_account_tokens(email) {
-            Some(t) => t,
-            None => return Err(format!("Account {} not found. Run login first.", email).into()),
-        }
-    } else {
-        match get_active_account_tokens() {
-            Some(t) => t,
-            None => {
-                return Err("No active account. Please login using: agy-usage login".into());
-            }
-        }
-    };
-
-    eprintln!("Checking authentication status...");
-    let mut api_client = ApiClient::new(
-        tokens,
-        Box::new(crate::config::FileTokenStorage),
-        options.debug,
-    );
-
-    eprintln!("Fetching quota information from Google API...");
-    let code_assist = api_client.load_code_assist(options.force).await?;
-
-    // Resolve project ID (automatically handles onboarding & dirty state if needed)
-    let _project_id = api_client.resolve_project_id(options.force).await;
-
-    let quota_summary_resp = match api_client.retrieve_user_quota_summary(options.force).await {
-        Ok(qs) => Some(qs),
-        Err(e) => {
-            eprintln!("Warning: Failed to fetch user quota summary ({})", e);
-            None
-        }
-    };
+    let report = crate::agy::fetch_usage(options.debug).await?;
 
     if options.json {
-        print_json(
-            api_client.tokens().email(),
-            &code_assist,
-            &quota_summary_resp,
-        );
+        print_json(&report.raw);
     } else if std::io::stdout().is_terminal() {
         eprintln!(); // Print the separating newline to stderr
-        print_pretty(
-            api_client.tokens().email(),
-            &code_assist,
-            &quota_summary_resp,
-        );
+        print_pretty(&report.output);
     } else {
-        print_markdown(
-            api_client.tokens().email(),
-            &code_assist,
-            &quota_summary_resp,
-        );
+        print_markdown(&report.output);
     }
 
     Ok(())
@@ -220,12 +172,12 @@ fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     print_border_line('╰', '┴', '╯', &widths);
 }
 
-/// Helper to format a single QuotaSummaryBucket into table row fields.
-fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Vec<String> {
+/// Helper to format a single usage bucket into table row fields.
+fn format_usage_bucket_row(bucket: &crate::agy::UsageBucket, group_name: &str) -> Vec<String> {
     let raw_name = bucket
-        .display_name
+        .name
         .as_deref()
-        .or(bucket.bucket_id.as_deref())
+        .or(bucket.id.as_deref())
         .unwrap_or("Unknown Bucket");
 
     let name = raw_name
@@ -234,128 +186,63 @@ fn format_quota_bucket_row(bucket: &crate::google_api::QuotaSummaryBucket) -> Ve
         .unwrap_or(raw_name)
         .trim();
 
-    let rem_pct = if bucket.disabled == Some(true) {
-        let bar = "███UNLIMITED███";
-        format!("[{}]  N/A", bar).green().bold().to_string()
+    // The group name is already shown as the table heading, so avoid repeating
+    // it in the bucket column (e.g. "Gemini 4 Argon Weekly Limit" -> "Weekly Limit").
+    let stripped_name = if group_name.is_empty() {
+        name
     } else {
-        let is_exhausted = bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
-        format_remaining(bucket.remaining_fraction, is_exhausted)
+        name.strip_prefix(group_name)
+            .map(str::trim_start)
+            .unwrap_or(name)
     };
+    let name = if stripped_name.is_empty() {
+        name
+    } else {
+        stripped_name
+    };
+    let name = if name.is_empty() {
+        "Unknown Bucket"
+    } else {
+        name
+    };
+
+    let is_exhausted = bucket.remaining_fraction.map(|f| f <= 0.0).unwrap_or(false);
+    let rem_pct = format_remaining(bucket.remaining_fraction, is_exhausted);
 
     let reset_time = bucket
         .reset_time
-        .as_ref()
-        .map(|t| format_reset_time(t))
+        .as_deref()
+        .map(format_reset_time)
         .unwrap_or_else(|| "N/A".to_string());
 
     vec![name.to_string(), rem_pct, reset_time]
 }
 
-fn print_pretty(
-    email: &str,
-    code_assist: &crate::google_api::LoadCodeAssistResponse,
-    quota_summary_resp: &Option<RetrieveUserQuotaSummaryResponse>,
-) {
+fn print_pretty(usage: &UsageOutput) {
     let now_str = Utc::now()
         .with_timezone(&chrono::Local)
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
     println!("{}", "📊 Antigravity Quota Status".blue().bold());
     println!("   Retrieved: {}", now_str);
-    println!("   Active Account: {}", email.bold());
 
-    let plan_id = code_assist
-        .plan_info
-        .as_ref()
-        .and_then(|p| p.plan_type.clone())
-        .or_else(|| code_assist.paid_tier.as_ref().and_then(|t| t.id.clone()))
-        .or_else(|| code_assist.current_tier.as_ref().and_then(|t| t.id.clone()))
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    let plan_label = match plan_id.as_str() {
-        "g1-pro-tier" => "Google AI Pro".to_string(),
-        "free-tier" => "Free Tier".to_string(),
-        "standard-tier" => "Standard Tier".to_string(),
-        other => {
-            let mut name = other.to_string();
-            if name.ends_with("-tier") {
-                name = name[..name.len() - 5].to_string();
-            }
-            name.split('-')
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    };
-
-    println!("   Plan Type: {}", plan_label.magenta());
-
-    if let Some(avail) = code_assist.available_prompt_credits {
-        if let Some(monthly) = code_assist
-            .plan_info
-            .as_ref()
-            .and_then(|p| p.monthly_prompt_credits)
+    for group in usage.groups() {
+        println!("\n{} {}", "👥".cyan().bold(), group.name.cyan().bold());
+        if let Some(description) = group.description.as_deref()
+            && !description.is_empty()
         {
-            println!(
-                "   Prompt Credits: {} / {} ({} remaining)",
-                avail.to_string().green(),
-                monthly,
-                format_remaining(Some(avail as f64 / monthly as f64), false)
-            );
-        } else {
-            println!("   Prompt Credits: {}", avail.to_string().green());
+            println!("{}", description);
         }
-    } else {
-        println!("   Prompt Credits: {}", "Unlimited".green());
+
+        let rows: Vec<Vec<String>> = group
+            .buckets
+            .iter()
+            .map(|bucket| format_usage_bucket_row(bucket, &group.name))
+            .collect();
+        print_table(&["Quota Bucket", "Remaining %", "Reset Time"], &rows);
     }
 
-    if let Some(summary) = quota_summary_resp {
-        // 1. Display individual buckets if they exist
-        let mut quota_rows = vec![];
-        if let Some(buckets) = &summary.buckets {
-            for bucket in buckets {
-                quota_rows.push(format_quota_bucket_row(bucket));
-            }
-        }
-
-        if !quota_rows.is_empty() {
-            println!("\n{}", "📋 User Quota Summary (Buckets)".cyan().bold());
-            print_table(&["Quota Bucket", "Remaining %", "Reset Time"], &quota_rows);
-        }
-
-        // 2. Display groups if they exist
-        if let Some(groups) = &summary.groups {
-            for group in groups {
-                let group_name = group.display_name.as_deref().unwrap_or("Unnamed Group");
-                let group_desc = group.description.as_deref().unwrap_or("");
-
-                println!("\n{} {}", "👥".cyan().bold(), group_name.cyan().bold());
-                if !group_desc.is_empty() {
-                    println!("{}", group_desc);
-                }
-
-                let mut group_rows = vec![];
-                if let Some(buckets) = &group.buckets {
-                    for bucket in buckets {
-                        group_rows.push(format_quota_bucket_row(bucket));
-                    }
-                }
-
-                if !group_rows.is_empty() {
-                    print_table(&["Quota Bucket", "Remaining %", "Reset Time"], &group_rows);
-                }
-            }
-        }
-    }
-
-    if let Some(summary) = quota_summary_resp
-        && let Some(description) = &summary.description
+    if let Some(description) = usage.description()
         && !description.is_empty()
     {
         println!("\n{}", description);
@@ -377,144 +264,41 @@ fn print_markdown_table(headers: &[&str], rows: &[Vec<String>]) {
     }
 }
 
-fn print_markdown(
-    email: &str,
-    code_assist: &crate::google_api::LoadCodeAssistResponse,
-    quota_summary_resp: &Option<RetrieveUserQuotaSummaryResponse>,
-) {
+fn print_markdown(usage: &UsageOutput) {
     let now_str = Utc::now()
         .with_timezone(&chrono::Local)
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
     println!("# 📊 Antigravity Quota Status\n");
     println!("- **Retrieved:** {}", now_str);
-    println!("- **Active Account:** {}", email);
 
-    let plan_id = code_assist
-        .plan_info
-        .as_ref()
-        .and_then(|p| p.plan_type.clone())
-        .or_else(|| code_assist.paid_tier.as_ref().and_then(|t| t.id.clone()))
-        .or_else(|| code_assist.current_tier.as_ref().and_then(|t| t.id.clone()))
-        .unwrap_or_else(|| "Unknown".to_string());
-
-    let plan_label = match plan_id.as_str() {
-        "g1-pro-tier" => "Google AI Pro".to_string(),
-        "free-tier" => "Free Tier".to_string(),
-        "standard-tier" => "Standard Tier".to_string(),
-        other => {
-            let mut name = other.to_string();
-            if name.ends_with("-tier") {
-                name = name[..name.len() - 5].to_string();
-            }
-            name.split('-')
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    };
-
-    println!("- **Plan Type:** {}", plan_label);
-
-    if let Some(avail) = code_assist.available_prompt_credits {
-        if let Some(monthly) = code_assist
-            .plan_info
-            .as_ref()
-            .and_then(|p| p.monthly_prompt_credits)
-        {
-            println!(
-                "- **Prompt Credits:** {} / {} ({} remaining)",
-                avail,
-                monthly,
-                strip_ansi_codes(&format_remaining(
-                    Some(avail as f64 / monthly as f64),
-                    false
-                ))
-            );
-        } else {
-            println!("- **Prompt Credits:** {}", avail);
-        }
-    } else {
-        println!("- **Prompt Credits:** Unlimited");
-    }
-
-    if let Some(summary) = quota_summary_resp {
-        let mut quota_rows = vec![];
-        if let Some(buckets) = &summary.buckets {
-            for bucket in buckets {
-                quota_rows.push(format_quota_bucket_row(bucket));
-            }
-        }
-
-        if !quota_rows.is_empty() {
-            println!("\n## 📋 User Quota Summary (Buckets)\n");
-            print_markdown_table(&["Quota Bucket", "Remaining %", "Reset Time"], &quota_rows);
-        }
-
-        if let Some(groups) = &summary.groups {
-            for group in groups {
-                let group_name = group.display_name.as_deref().unwrap_or("Unnamed Group");
-                let group_desc = group.description.as_deref().unwrap_or("");
-
-                println!("\n## 👥 {}\n", group_name);
-                if !group_desc.is_empty() {
-                    println!("{}\n", group_desc);
-                }
-
-                let mut group_rows = vec![];
-                if let Some(buckets) = &group.buckets {
-                    for bucket in buckets {
-                        group_rows.push(format_quota_bucket_row(bucket));
-                    }
-                }
-
-                if !group_rows.is_empty() {
-                    print_markdown_table(
-                        &["Quota Bucket", "Remaining %", "Reset Time"],
-                        &group_rows,
-                    );
-                }
-            }
-        }
-
-        if let Some(description) = &summary.description
+    for group in usage.groups() {
+        println!("\n## 👥 {}\n", group.name);
+        if let Some(description) = group.description.as_deref()
             && !description.is_empty()
         {
-            println!("\n{}", description);
+            println!("{}\n", description);
         }
+
+        let rows: Vec<Vec<String>> = group
+            .buckets
+            .iter()
+            .map(|bucket| format_usage_bucket_row(bucket, &group.name))
+            .collect();
+        print_markdown_table(&["Quota Bucket", "Remaining %", "Reset Time"], &rows);
+    }
+
+    if let Some(description) = usage.description()
+        && !description.is_empty()
+    {
+        println!("\n{}", description);
     }
 }
 
-fn print_json(
-    email: &str,
-    code_assist: &crate::google_api::LoadCodeAssistResponse,
-    quota_summary_resp: &Option<RetrieveUserQuotaSummaryResponse>,
-) {
-    #[derive(serde::Serialize)]
-    struct JsonOutput<'a> {
-        email: &'a str,
-        timestamp: String,
-        prompt_credits: Option<serde_json::Value>,
-        quota_summary: Option<serde_json::Value>,
-    }
-
-    let out = JsonOutput {
-        email,
-        timestamp: Utc::now().to_rfc3339(),
-        prompt_credits: serde_json::to_value(code_assist).ok(),
-        quota_summary: quota_summary_resp
-            .as_ref()
-            .and_then(|r| serde_json::to_value(r).ok()),
-    };
-
-    if let Ok(json_str) = serde_json::to_string_pretty(&out) {
-        println!("{}", json_str);
+fn print_json(raw: &serde_json::Value) {
+    match serde_json::to_string_pretty(raw) {
+        Ok(json_str) => println!("{}", json_str),
+        Err(e) => eprintln!("Warning: Failed to serialize `agy` output: {}", e),
     }
 }
 
@@ -611,33 +395,47 @@ mod tests {
     }
 
     #[test]
-    fn test_format_quota_bucket_row_trims_remaining() {
-        let bucket1 = crate::google_api::QuotaSummaryBucket {
-            bucket_id: None,
-            display_name: Some("Weekly Limit Remaining".to_string()),
-            description: None,
-            window: None,
-            remaining: None,
+    fn test_format_usage_bucket_row_trims_remaining() {
+        let bucket1 = crate::agy::UsageBucket {
+            id: None,
+            name: Some("Weekly Limit Remaining".to_string()),
             remaining_fraction: Some(1.0),
-            remaining_amount: None,
-            disabled: None,
             reset_time: None,
         };
-        let row1 = format_quota_bucket_row(&bucket1);
+        let row1 = format_usage_bucket_row(&bucket1, "Gemini Models");
         assert_eq!(row1[0], "Weekly Limit");
 
-        let bucket2 = crate::google_api::QuotaSummaryBucket {
-            bucket_id: None,
-            display_name: Some("Five Hour Limit Remaining".to_string()),
-            description: None,
-            window: None,
-            remaining: None,
+        let bucket2 = crate::agy::UsageBucket {
+            id: None,
+            name: Some("Five Hour Limit Remaining".to_string()),
             remaining_fraction: Some(1.0),
-            remaining_amount: None,
-            disabled: None,
             reset_time: None,
         };
-        let row2 = format_quota_bucket_row(&bucket2);
+        let row2 = format_usage_bucket_row(&bucket2, "Gemini Models");
         assert_eq!(row2[0], "Five Hour Limit");
+    }
+
+    #[test]
+    fn test_format_usage_bucket_row_strips_group_name_prefix() {
+        let bucket = crate::agy::UsageBucket {
+            id: None,
+            name: Some("Gemini 4 Argon Weekly Limit".to_string()),
+            remaining_fraction: Some(1.0),
+            reset_time: None,
+        };
+        let row = format_usage_bucket_row(&bucket, "Gemini 4 Argon");
+        assert_eq!(row[0], "Weekly Limit");
+    }
+
+    #[test]
+    fn test_format_usage_bucket_row_keeps_name_when_prefix_removal_is_empty() {
+        let bucket = crate::agy::UsageBucket {
+            id: None,
+            name: Some("Gemini 4 Argon".to_string()),
+            remaining_fraction: Some(1.0),
+            reset_time: None,
+        };
+        let row = format_usage_bucket_row(&bucket, "Gemini 4 Argon");
+        assert_eq!(row[0], "Gemini 4 Argon");
     }
 }

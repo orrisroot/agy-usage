@@ -1,19 +1,14 @@
 # agy-usage
 
-`agy-usage` is a CLI tool designed to track and manage Antigravity model quotas and usage.
+`agy-usage` is a CLI tool designed to track Antigravity model quotas and usage.
 
 ## Features
 
-- **Google OAuth Authentication**: Sign in and authenticate using your Google account.
-- **Multi-Account Management**: Register multiple Google accounts and switch between them seamlessly.
-- **Quota Information Display**: Fetch and display real-time model usage limits and quotas in your terminal. Output automatically falls back to Markdown format when piped or redirected, making it CI/CD and script-friendly. JSON output format is also supported.
-- **Wakeup Functionality**: Trigger models to initiate quota limitation timers or wake up the model.
-- **Robust Architecture & Security Design**: Engineered with high reliability and security standards, featuring:
-  - **Decoupled Caching & Storage**: Abstraction of local filesystem access behind a `StorageProvider` trait, completely decoupling the `ApiClient`'s network logic from physical storage layout and enforcing path key sanitization.
-  - **Modular API Client Architecture**: Structured API logic split into specialized `src/api/` submodules (`client`, `types`, `sanitizer`) for clean separation of concerns and high testability.
-  - **Strict Encapsulation**: Private credential field structures managed through accessors to enforce OAuth2 parameter invariants and block uncontrolled mutations.
-  - **Atomic & Durable Writes**: Token/config files are saved by writing to a temporary file first, flushing securely to physical disk (`sync_all`), and renaming atomically to prevent session corruption on crash or power loss.
-  - **Fault-Tolerant Login Callback Server**: Loopback listener handles connection accept errors gracefully and applies HTML escaping to response content to prevent injection vulnerabilities.
+- **Quota Information Display**: Runs the Antigravity `agy` CLI's `/usage` command and renders the structured result in your terminal. Output automatically falls back to Markdown format when piped or redirected, making it CI/CD and script-friendly. JSON output format is also supported.
+- **Wakeup Functionality**: Discovers models with `agy models` and triggers them via `agy -p` to initiate quota limitation timers or wake up models.
+- **Atomic Cache Writes**: Cache files are written to a temporary file, flushed securely to physical disk (`sync_all`), and renamed atomically to prevent corruption on crash or power loss.
+- **Path Sanitization**: Cache keys are sanitized before being used in filesystem paths.
+- **Per-Account State**: Wakeup caches are isolated per agy-authenticated account when the account can be determined.
 
 ## Installation / Build
 
@@ -26,75 +21,68 @@ This tool is built with Rust. Follow the steps below to compile and run it:
 cargo build --release
 ```
 
-The compiled binary will be generated at `target/release/agy-usage`.
+The compiled binary is generated at `target/release/agy-usage`.
+
+> **Note:** Quota display and wakeup invoke the Antigravity `agy` CLI, so `agy` must be installed and authenticated, and available in your `PATH`. Authentication is handled entirely by the `agy` CLI. `status` and `accounts` report the account currently authenticated in the `agy` CLI.
 
 ## Usage
 
-### 1. Authentication (Login)
+Global options:
+- `--json`: shorthand for `quota --json`.
+- `--debug`: shows `agy` stderr for `quota` and `wakeup`.
 
-Use the `login` command for the initial setup or to add a new account. A browser window will open automatically for OAuth authentication.
+### 1. Account Status
 
-```bash
-agy-usage login
-```
-
-If you are running the tool in a headless environment, use the `--no-browser` or `--manual` options.
-
-### 2. Account Management
-
-You can list, switch, or remove registered accounts.
+Show the account currently authenticated in the `agy` CLI. These commands read the account from the OS keyring used by agy, falling back to agy's token file when the keyring is unavailable. They do not make API calls.
 
 ```bash
-# List all registered accounts
+# Show authentication status and account
+agy-usage status
+
+# List the authenticated account
 agy-usage accounts list
 
-# Show the current active account
+# Show the authenticated account
 agy-usage accounts current
-
-# Switch the active account
-agy-usage accounts switch user@example.com
-
-# Remove a registered account
-agy-usage accounts remove user@example.com
 ```
 
-### 3. Checking Quota and Usage
+Account switching and removal are managed by the `agy` CLI, so `agy-usage` no longer provides `accounts switch` or `accounts remove`.
 
-Display the user quota summary (remaining usage, reset times), plan type, and prompt credits for the currently active account. Note that both basic metadata (such as plan info) and quota limits are **cached for 5 minutes** to prevent excessive API requests and rate limiting. Use the `--force` flag to bypass the cache and fetch real-time data.
+### 2. Checking Quota and Usage
 
-**Tip:** When you pipe or redirect the output (e.g., `agy-usage quota > result.md`), it automatically switches to Markdown format and disables terminal colors. Loading messages are sent to `stderr` to keep your output clean for scripts.
+Display the user quota summary (remaining usage and reset times) by running `agy -p "/usage" --output-format json` and rendering its output. The `agy` CLI must be installed and authenticated.
+
+**Tip:** When you pipe or redirect the output (e.g., `agy-usage quota > result.md`), it automatically switches to Markdown format and disables terminal colors. Errors and diagnostics are written to `stderr` to keep your output clean for scripts.
 
 ```bash
 # Display quota
 agy-usage quota
 
-# Force bypass cache to fetch real-time data
-agy-usage quota --force
-
-# Output in JSON format
+# Output the raw JSON produced by `agy /usage`
 agy-usage quota --json
 ```
 
-### 4. Wakeup Trigger
+The account used for quota display is the one authenticated in the `agy` CLI.
 
-Trigger models to start quota limitation timers or wake them up. By default, the tool queries the backend for available chat/agent models and automatically selects the most cost-effective model from both the Gemini group and the other (Claude/GPT) group to trigger, minimizing quota consumption.
+### 3. Wakeup Trigger
 
-To prevent excessive API requests and save your quota, `wakeup` implements a 5-minute cache per model. If triggered multiple times within 5 minutes, subsequent calls will be skipped.
+Trigger models to start quota limitation timers or wake them up. By default, the tool runs `agy models` to discover available models and automatically selects the most cost-effective model across all active quota categories (standard Gemini 3.x Flash/Pro models, dedicated Gemini 4 Argon models, and Claude/GPT models) from the returned list. Actual triggering is performed by `agy -p`, so no direct API calls are made.
+
+To prevent excessive triggers and save your quota, `wakeup` implements a 5-minute cache per model and agy account. If triggered multiple times within 5 minutes, subsequent calls will be skipped.
+
+> **Note:** `wakeup` runs a full `agy` agent turn for each selected model, so it consumes more tokens than a minimal API request. Use `--models` to limit the number of targets.
 
 ```bash
 # Trigger wakeup for dynamically resolved cheapest models
 agy-usage wakeup
 
-# Specify models manually and use a custom prompt
-agy-usage wakeup --models gemini-3.1-pro-low,claude-sonnet-4-6 --prompt "Hello"
-
-# Retain the original long system prompt
-agy-usage wakeup --keep-system-prompt
+# Specify models manually (e.g. Gemini 4 Argon Low, Claude Sonnet 5.5 Low) and use a custom prompt
+agy-usage wakeup --models gemini-4-argon-low,claude-sonnet-5-5-low --prompt "Hello"
 ```
 
-### 5. Periodic Execution (Scheduled Wakeup)
+### 4. Periodic Execution (Scheduled Wakeup)
 
-To keep models warmed up or to reset/trigger quota limits continuously, you can run the `wakeup` command periodically. Since the tool stores OAuth tokens per user, **make sure to run these tasks under the same user account that performed the login.**
+To keep models warmed up or to reset/trigger quota limits continuously, you can run the `wakeup` command periodically. Make sure the `agy` CLI is authenticated as the user who will run the scheduled job, that it is available in `PATH`, and that the process can access the same credential store used by agy (the OS keyring or agy's token file).
 
 #### Linux (cron)
 
@@ -200,7 +188,7 @@ Or you can create the task via the GUI **Task Scheduler**:
 2. Set the Trigger to **Daily**, and under Advanced Settings set **Repeat task every** to **1 hour**.
 3. Set the Action to **Start a program**, browse to `agy-usage.exe`, and add `wakeup` in the arguments.
 
-### 6. Self-Update
+### 5. Self-Update
 
 To update the CLI tool to the latest version directly from GitHub releases:
 
@@ -210,7 +198,7 @@ agy-usage self-update
 
 This command automatically checks for new releases on GitHub, downloads the correct binary for your operating system and architecture, and replaces the running executable in-place.
 
-### 7. Version
+### 6. Version
 
 Show the current version of the CLI tool.
 
@@ -223,18 +211,6 @@ You can also use the standard flags `-V` or `--version` to display the version:
 ```bash
 agy-usage -V
 agy-usage --version
-```
-
-### 8. Logging Out
-
-Log out from one or all accounts.
-
-```bash
-# Log out from a specific account
-agy-usage logout user@example.com
-
-# Log out from all accounts
-agy-usage logout --all
 ```
 
 ## Changelog

@@ -1,9 +1,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-mod api;
+mod agy;
 mod config;
-mod google_api;
-mod oauth;
 mod quota;
 mod storage;
 mod wakeup;
@@ -20,47 +18,16 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
-    /// Account email to use (shortcut for quota --account)
-    #[arg(short, long)]
-    account: Option<String>,
-
     /// Enable debug output (shortcut for quota --debug / wakeup --debug)
     #[arg(long)]
     debug: bool,
-
-    /// Force bypass cache to fetch latest data
-    #[arg(short, long)]
-    force: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Authenticate with Google (adds a new account)
-    Login {
-        /// Do not open browser, print URL instead
-        #[arg(long)]
-        no_browser: bool,
-
-        /// Manual login flow (copy-paste URL)
-        #[arg(long)]
-        manual: bool,
-
-        /// Port for OAuth callback server
-        #[arg(short, long)]
-        port: Option<u16>,
-    },
-    /// Log out of one or all accounts
-    Logout {
-        /// Account email to log out from
-        email: Option<String>,
-
-        /// Log out of all accounts
-        #[arg(long)]
-        all: bool,
-    },
-    /// Show current login status
+    /// Show the authenticated agy CLI account
     Status,
-    /// Manage multiple Google accounts
+    /// Show the authenticated agy CLI account
     Accounts {
         #[command(subcommand)]
         command: Option<AccountsCommands>,
@@ -71,17 +38,9 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Account email to check
-        #[arg(short, long)]
-        account: Option<String>,
-
-        /// Enable debug output (shows API request and response details)
+        /// Enable debug output (shows `agy` stderr)
         #[arg(long)]
         debug: bool,
-
-        /// Force bypass cache to fetch latest data
-        #[arg(short, long)]
-        force: bool,
     },
     /// Trigger models to start quota limitation timers / wakeup
     Wakeup {
@@ -93,15 +52,7 @@ enum Commands {
         #[arg(long)]
         prompt: Option<String>,
 
-        /// Account email to use
-        #[arg(short, long)]
-        account: Option<String>,
-
-        /// Retain the original long system prompt instead of omitting it
-        #[arg(long)]
-        keep_system_prompt: bool,
-
-        /// Enable debug output (shows API request and response details)
+        /// Enable debug output (shows `agy` stderr)
         #[arg(long)]
         debug: bool,
     },
@@ -113,13 +64,9 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum AccountsCommands {
-    /// List all registered accounts
+    /// List the authenticated agy CLI account
     List,
-    /// Switch the active account
-    Switch { email: String },
-    /// Remove an account
-    Remove { email: String },
-    /// Show current active account
+    /// Show the authenticated agy CLI account
     Current,
 }
 
@@ -128,175 +75,53 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Login {
-            no_browser,
-            manual,
-            port,
-        }) => {
-            let opts = oauth::LoginOptions {
-                no_browser,
-                manual,
-                port,
-            };
-            match oauth::run_login(opts).await {
-                Ok(email) => {
-                    println!(
-                        "{} Logged in successfully as {}!",
-                        "Success:".green().bold(),
-                        email.bold()
-                    );
+        Some(Commands::Status) => match crate::agy::read_account() {
+            Some(account) => {
+                println!("{}", "agy CLI authentication".blue().bold());
+                println!("   Status: {}", "logged in".green().bold());
+                match account.email() {
+                    Some(email) => println!("   Account: {}", email.bold()),
+                    None => println!("   Account: unknown"),
                 }
-                Err(e) => {
-                    eprintln!("{} Login failed: {}", "Error:".red().bold(), e);
-                    std::process::exit(1);
+                if let Some(method) = account
+                    .auth_method
+                    .as_deref()
+                    .filter(|method| !method.is_empty())
+                {
+                    println!("   Auth method: {}", method);
                 }
             }
-        }
-        Some(Commands::Logout { email, all }) => {
-            let global = config::load_global_config();
-            if all {
-                let emails = config::list_accounts();
-                if emails.is_empty() {
-                    println!("No accounts are logged in.");
-                    return;
-                }
-                for email in emails {
-                    if let Err(e) = config::remove_account(&email) {
-                        eprintln!("Failed to remove account {}: {}", email, e);
-                    } else {
-                        println!("Logged out of {}.", email);
-                    }
-                }
-                println!("{}", "Successfully logged out of all accounts.".green());
-            } else if let Some(ref email) = email {
-                if let Err(e) = config::remove_account(email) {
-                    eprintln!(
-                        "{} Failed to logout from {}: {}",
-                        "Error:".red().bold(),
-                        email,
-                        e
-                    );
-                    std::process::exit(1);
-                }
-                println!(
-                    "{}",
-                    format!("Successfully logged out of {}.", email).green()
-                );
-            } else if let Some(ref email) = global.active_email {
-                if let Err(e) = config::remove_account(email) {
-                    eprintln!(
-                        "{} Failed to logout from {}: {}",
-                        "Error:".red().bold(),
-                        email,
-                        e
-                    );
-                    std::process::exit(1);
-                }
-                println!(
-                    "{}",
-                    format!("Successfully logged out of active account {}.", email).green()
-                );
-            } else {
-                println!("No active account to log out from.");
+            None => {
+                println!("Not logged in to the agy CLI. Run `agy` to authenticate.");
             }
-        }
-        Some(Commands::Status) => {
-            let global = config::load_global_config();
-            let accounts = config::list_accounts();
-            if accounts.is_empty() {
-                println!("Not logged in. Use 'agy-usage login' to authenticate.");
-                return;
-            }
-            println!("Registered accounts:");
-            for email in accounts {
-                let is_active = global.active_email.as_ref() == Some(&email);
-                let status_str = if is_active {
-                    "[*] (active)".green().to_string()
-                } else {
-                    "".to_string()
-                };
-                println!(" - {} {}", email, status_str);
-            }
-        }
+        },
         Some(Commands::Accounts { command }) => {
             let subcmd = command.unwrap_or(AccountsCommands::List);
             match subcmd {
-                AccountsCommands::List => {
-                    let global = config::load_global_config();
-                    let emails = config::list_accounts();
-                    if emails.is_empty() {
-                        println!("No accounts found. Use 'agy-usage login' to add one.");
-                        return;
+                AccountsCommands::List => match crate::agy::read_account() {
+                    Some(account) => {
+                        println!("\n📊 agy CLI Account:");
+                        let email = account.email().unwrap_or("unknown");
+                        println!("  {}", format!("* {}", email).green().bold());
                     }
-                    println!("\n📊 Registered Accounts:");
-                    for email in emails {
-                        let is_active = global.active_email.as_ref() == Some(&email);
-                        if is_active {
-                            println!("  {}", format!("* {}", email).green().bold());
-                        } else {
-                            println!("    {}", email);
-                        }
+                    None => {
+                        println!("No agy CLI account found. Run `agy` to authenticate.");
                     }
-                    println!("\n* = active account");
-                }
-                AccountsCommands::Switch { email } => {
-                    let emails = config::list_accounts();
-                    if !emails.contains(&email) {
-                        eprintln!(
-                            "{} Account {} not found. Log in first.",
-                            "Error:".red().bold(),
-                            email
-                        );
-                        std::process::exit(1);
+                },
+                AccountsCommands::Current => match crate::agy::read_account() {
+                    Some(account) => {
+                        println!("agy CLI account: {}", account.email().unwrap_or("unknown"));
                     }
-                    let mut global = config::load_global_config();
-                    global.active_email = Some(email.clone());
-                    if let Err(e) = config::save_global_config(&global) {
-                        eprintln!(
-                            "{} Failed to save configuration: {}",
-                            "Error:".red().bold(),
-                            e
-                        );
-                        std::process::exit(1);
+                    None => {
+                        println!("No agy CLI account found. Run `agy` to authenticate.");
                     }
-                    println!(
-                        "{}",
-                        format!("Switched active account to: {}", email).green()
-                    );
-                }
-                AccountsCommands::Remove { email } => {
-                    let emails = config::list_accounts();
-                    if !emails.contains(&email) {
-                        eprintln!("{} Account {} not found.", "Error:".red().bold(), email);
-                        std::process::exit(1);
-                    }
-                    if let Err(e) = config::remove_account(&email) {
-                        eprintln!("{} Failed to remove account: {}", "Error:".red().bold(), e);
-                        std::process::exit(1);
-                    }
-                    println!("{}", format!("Removed account {}.", email).green());
-                }
-                AccountsCommands::Current => {
-                    let global = config::load_global_config();
-                    if let Some(ref email) = global.active_email {
-                        println!("Active account: {}", email);
-                    } else {
-                        println!("No active account selected.");
-                    }
-                }
+                },
             }
         }
-        Some(Commands::Quota {
-            json,
-            account,
-            debug,
-            force,
-        }) => {
+        Some(Commands::Quota { json, debug }) => {
             let quota_opts = quota::QuotaOptions {
                 json,
-                account,
                 debug: debug || cli.debug,
-                force: force || cli.force,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
                 eprintln!("{} {}", "Error:".red().bold(), e);
@@ -306,15 +131,11 @@ async fn main() {
         Some(Commands::Wakeup {
             models,
             prompt,
-            account,
-            keep_system_prompt,
             debug,
         }) => {
             let opts = wakeup::WakeupOptions {
                 models,
                 prompt,
-                account,
-                keep_system_prompt,
                 debug: debug || cli.debug,
             };
             if let Err(e) = wakeup::run_wakeup(opts).await {
@@ -334,9 +155,7 @@ async fn main() {
         None => {
             let quota_opts = quota::QuotaOptions {
                 json: cli.json,
-                account: cli.account,
                 debug: cli.debug,
-                force: cli.force,
             };
             if let Err(e) = quota::run_quota(quota_opts).await {
                 eprintln!("{} {}", "Error:".red().bold(), e);

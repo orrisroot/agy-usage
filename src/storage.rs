@@ -1,14 +1,8 @@
-use crate::config::{StoredTokens, get_account_dir, save_account_tokens};
+use crate::config::get_account_dir;
 use std::fs::{create_dir_all, read_to_string};
 use std::path::Path;
 
 pub trait StorageProvider: std::fmt::Debug + Send + Sync + 'static {
-    fn save_tokens(
-        &self,
-        email: &str,
-        tokens: &StoredTokens,
-    ) -> Result<(), Box<dyn std::error::Error>>;
-
     fn read_cache(&self, email: &str, cache_key: &str) -> Option<String>;
 
     fn write_cache(
@@ -89,15 +83,6 @@ pub fn write_atomically(
 pub struct FileStorage;
 
 impl StorageProvider for FileStorage {
-    fn save_tokens(
-        &self,
-        email: &str,
-        tokens: &StoredTokens,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        save_account_tokens(email, tokens)?;
-        Ok(())
-    }
-
     fn read_cache(&self, email: &str, cache_key: &str) -> Option<String> {
         let safe_key = sanitize_key(cache_key);
         let cache_path = get_account_dir(email).join(format!("{}_cache.json", safe_key));
