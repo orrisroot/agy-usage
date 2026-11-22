@@ -193,12 +193,16 @@ pub struct TriggerOutput {
     pub usage: Option<TriggerUsage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 pub struct TriggerUsage {
     #[serde(default)]
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    #[serde(default)]
+    pub thinking_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_read_tokens: Option<u64>,
     #[serde(default)]
     pub total_tokens: u64,
 }
@@ -480,7 +484,44 @@ mod tests {
         assert_eq!(output.status, "SUCCESS");
         assert_eq!(output.response, "hello");
         assert_eq!(output.duration_seconds, 1.25);
-        assert_eq!(output.usage.unwrap().total_tokens, 12);
+        assert_eq!(
+            output.usage.unwrap(),
+            TriggerUsage {
+                input_tokens: 10,
+                output_tokens: 2,
+                thinking_tokens: Some(1),
+                cache_read_tokens: Some(0),
+                total_tokens: 12,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_trigger_output_without_optional_usage_fields() {
+        let output: TriggerOutput = serde_json::from_str(
+            r#"{
+                "status": "SUCCESS",
+                "response": "hello",
+                "duration_seconds": 0.5,
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "total_tokens": 120
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.usage.unwrap(),
+            TriggerUsage {
+                input_tokens: 100,
+                output_tokens: 20,
+                thinking_tokens: None,
+                cache_read_tokens: None,
+                total_tokens: 120,
+            }
+        );
     }
 
     #[test]

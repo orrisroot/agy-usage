@@ -75,10 +75,7 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
                         println!("   Response: {:?}", result.response);
                     }
                     if let Some(ref usage) = result.usage {
-                        println!(
-                            "   Tokens Used: Input={}, Output={}, Total={}",
-                            usage.input_tokens, usage.output_tokens, usage.total_tokens
-                        );
+                        println!("   {}", format_trigger_usage(usage));
                     }
                     wakeup_cache.history.insert(
                         model_id.clone(),
@@ -113,6 +110,41 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
 
     println!("\n✨ Wakeup/Trigger cycle complete.");
     Ok(())
+}
+
+/// Formats token usage reported by `agy --output-format json`.
+///
+/// `agy` reports `input_tokens` as uncached input tokens (separate from
+/// `cache_read_tokens`, which is excluded from `input_tokens` and `total_tokens`),
+/// while `thinking_tokens` is a subset of `output_tokens`.
+fn format_trigger_usage(usage: &crate::agy::TriggerUsage) -> String {
+    let input_part = if usage.cache_read_tokens.is_some() {
+        format!("Input={} (uncached)", usage.input_tokens)
+    } else {
+        format!("Input={}", usage.input_tokens)
+    };
+
+    let output_part = match usage.thinking_tokens {
+        Some(thinking) if thinking <= usage.output_tokens => {
+            format!(
+                "Output={} (incl. {} thinking)",
+                usage.output_tokens, thinking
+            )
+        }
+        Some(thinking) => format!("Output={}, Thinking={}", usage.output_tokens, thinking),
+        None => format!("Output={}", usage.output_tokens),
+    };
+
+    let mut formatted = format!(
+        "Tokens Used: {}, {}, Total={}",
+        input_part, output_part, usage.total_tokens
+    );
+
+    if let Some(cache_read) = usage.cache_read_tokens {
+        formatted.push_str(&format!(" | Cache Read={}", cache_read));
+    }
+
+    formatted
 }
 
 pub fn parse_model_version(model_id: &str) -> Option<(u32, u32)> {
@@ -376,5 +408,92 @@ mod tests {
         assert!(selected_no_argon.contains(&"gemini-3.8-flash-low".to_string()));
         assert!(selected_no_argon.contains(&"gpt-oss-120b-medium".to_string()));
         assert_eq!(selected_no_argon.len(), 2);
+    }
+
+    #[test]
+    fn test_format_trigger_usage_with_cache_and_thinking() {
+        let usage = crate::agy::TriggerUsage {
+            input_tokens: 7474,
+            output_tokens: 497,
+            thinking_tokens: Some(490),
+            cache_read_tokens: Some(7992),
+            total_tokens: 7971,
+        };
+        assert_eq!(
+            format_trigger_usage(&usage),
+            "Tokens Used: Input=7474 (uncached), Output=497 (incl. 490 thinking), Total=7971 | Cache Read=7992"
+        );
+    }
+
+    #[test]
+    fn test_format_trigger_usage_with_zero_optional_fields() {
+        let usage = crate::agy::TriggerUsage {
+            input_tokens: 10080,
+            output_tokens: 29,
+            thinking_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            total_tokens: 10109,
+        };
+        assert_eq!(
+            format_trigger_usage(&usage),
+            "Tokens Used: Input=10080 (uncached), Output=29 (incl. 0 thinking), Total=10109 | Cache Read=0"
+        );
+    }
+
+    #[test]
+    fn test_format_trigger_usage_without_optional_fields() {
+        let usage = crate::agy::TriggerUsage {
+            input_tokens: 100,
+            output_tokens: 20,
+            thinking_tokens: None,
+            cache_read_tokens: None,
+            total_tokens: 120,
+        };
+        assert_eq!(
+            format_trigger_usage(&usage),
+            "Tokens Used: Input=100, Output=20, Total=120"
+        );
+    }
+
+    #[test]
+    fn test_format_trigger_usage_with_partial_optional_fields() {
+        let cache_only = crate::agy::TriggerUsage {
+            input_tokens: 5602,
+            output_tokens: 147,
+            thinking_tokens: None,
+            cache_read_tokens: Some(2880),
+            total_tokens: 5749,
+        };
+        assert_eq!(
+            format_trigger_usage(&cache_only),
+            "Tokens Used: Input=5602 (uncached), Output=147, Total=5749 | Cache Read=2880"
+        );
+
+        let thinking_only = crate::agy::TriggerUsage {
+            input_tokens: 100,
+            output_tokens: 20,
+            thinking_tokens: Some(12),
+            cache_read_tokens: None,
+            total_tokens: 120,
+        };
+        assert_eq!(
+            format_trigger_usage(&thinking_only),
+            "Tokens Used: Input=100, Output=20 (incl. 12 thinking), Total=120"
+        );
+    }
+
+    #[test]
+    fn test_format_trigger_usage_handles_thinking_exceeding_output() {
+        let usage = crate::agy::TriggerUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            thinking_tokens: Some(25),
+            cache_read_tokens: Some(0),
+            total_tokens: 110,
+        };
+        assert_eq!(
+            format_trigger_usage(&usage),
+            "Tokens Used: Input=100 (uncached), Output=10, Thinking=25, Total=110 | Cache Read=0"
+        );
     }
 }
