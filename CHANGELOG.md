@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented below, grouped by release version.
 
+## [0.1.12] - 2026-11-22
+
+### Added
+- Added parsing of optional `cache_read_tokens` and `thinking_tokens` fields from `agy --output-format json` wakeup responses.
+- Added unit tests covering wakeup token usage parsing and formatting with optional fields present, zero, or omitted.
+
+### Changed
+- Updated `wakeup` token usage output to label `Input` as uncached, show `thinking_tokens` as included in `Output`, and display `Cache Read` separately when reported by `agy`, while falling back to the previous format when those fields are absent.
+
 ## [0.1.11] - 2026-11-07
 
 ### Added
