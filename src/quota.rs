@@ -26,6 +26,9 @@ pub async fn run_quota(options: QuotaOptions) -> Result<(), Box<dyn std::error::
 
 fn format_reset_time(reset_time_str: &str) -> String {
     if let Ok(dt) = DateTime::parse_from_rfc3339(reset_time_str) {
+        if dt.timestamp() <= 0 {
+            return "N/A".to_string();
+        }
         let diff = dt.with_timezone(&Utc).signed_duration_since(Utc::now());
         let sec = diff.num_seconds();
 
@@ -365,6 +368,11 @@ mod tests {
             format_reset_time(&hours_49.to_rfc3339()),
             format!("{} - 2d 1h 1m", local_fmt(hours_49))
         );
+
+        // 8. Unstarted / Epoch 0 / Go zero timestamps -> N/A
+        assert_eq!(format_reset_time("1970-01-01T00:00:00Z"), "N/A");
+        assert_eq!(format_reset_time("1970-01-01T09:00:00+09:00"), "N/A");
+        assert_eq!(format_reset_time("0001-01-01T00:00:00Z"), "N/A");
     }
 
     #[test]
