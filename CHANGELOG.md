@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented below, grouped by release version.
 
+## [0.1.13] - 2026-11-27
+
+### Added
+- Added dynamic quota group discovery in `wakeup` by matching model display names from `agy models` against active quota groups returned by `agy -p "/usage"`, with two-pass group-name fallback recovery, heuristic fallback, and warnings for unmatched groups.
+- Added unit tests covering multi-column `agy models` parsing, dynamic and fallback quota group resolution, Gemini 4 / Orchestrator / `xhigh` model scoring, and epoch-zero reset timestamp formatting.
+
+### Changed
+- Updated `wakeup` model version parsing and cost scoring to support Gemini 4 (`neon`, `carbon`, `hydrogen`, `argon`), `orchestrator` models, and `xhigh` tiers, and merged Gemini 4 Argon into the shared Gemini group in heuristic fallback mode.
+- Upgraded Cargo dependencies to their latest releases, including major updates to `dirs` (7.0), `keyring` (4.2), and `self_update` (1.3, migrating feature flags and `VersionStatus::is_updated()`), plus `tokio` (1.54).
+- Updated `README.md` to reflect current CLI behavior and dynamic quota group discovery in `wakeup`.
+
+### Fixed
+- Fixed `quota` reset time formatting to display `N/A` instead of `1970-01-01 ... - Resets soon` for unset Unix epoch zero and zero-value timestamps.
+- Fixed `wakeup` version parsing so `gemini-pro-orchestrator-argon` is no longer misclassified as a Gemini 4 Argon model.
+
 ## [0.1.12] - 2026-11-22
 
 ### Added
