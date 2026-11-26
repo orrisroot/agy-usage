@@ -15,8 +15,31 @@ pub async fn run_wakeup(options: WakeupOptions) -> Result<(), Box<dyn std::error
     let validated_models = if let Some(models) = options.models {
         models
     } else {
-        let model_ids = crate::agy::fetch_models(options.debug).await?;
-        select_default_models(&model_ids)
+        let models = crate::agy::fetch_models(options.debug).await?;
+        let groups = match crate::agy::fetch_usage(options.debug).await {
+            Ok(report) => report.output.groups(),
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to fetch quota groups from `agy /usage` ({}); falling back to default grouping.",
+                    e
+                );
+                Vec::new()
+            }
+        };
+        let selection = resolve_default_models(&models, &groups);
+        if selection.used_heuristic_fallback {
+            eprintln!(
+                "Warning: Could not match available models to quota groups from `agy /usage`; falling back to default grouping."
+            );
+        } else {
+            for group_name in &selection.unmatched_groups {
+                eprintln!(
+                    "Warning: No available models matched quota group \"{}\"; skipping.",
+                    group_name
+                );
+            }
+        }
+        selection.models
     };
 
     if validated_models.is_empty() {
@@ -148,9 +171,7 @@ fn format_trigger_usage(usage: &crate::agy::TriggerUsage) -> String {
 }
 
 pub fn parse_model_version(model_id: &str) -> Option<(u32, u32)> {
-    if model_id.contains("argon") {
-        return Some((4, 0));
-    }
+    let model_id = model_id.to_ascii_lowercase();
 
     // 1. Claude format: claude-sonnet-5-5-low, claude-opus-5-5, claude-sonnet-4-8, claude-3-7-sonnet
     if let Some(pos) = model_id.find("claude-") {
@@ -168,7 +189,7 @@ pub fn parse_model_version(model_id: &str) -> Option<(u32, u32)> {
         }
     }
 
-    // 2. Gemini format: gemini-3.8-..., gemini-2.5-..., gemini-3-...
+    // 2. Gemini format: gemini-4-neon-..., gemini-3.8-..., gemini-2.5-..., gemini-3-...
     if let Some(pos) = model_id.find("gemini-") {
         let remainder = &model_id[pos + 7..];
         let mut parts = remainder.split('-');
@@ -185,33 +206,48 @@ pub fn parse_model_version(model_id: &str) -> Option<(u32, u32)> {
             }
         }
     }
+
+    if model_id == "argon" || model_id.starts_with("argon-") {
+        return Some((4, 0));
+    }
+
     None
 }
 
 fn get_model_cost_score(model_id: &str) -> u32 {
+    let model_id = model_id.to_ascii_lowercase();
     let mut score: i32 = 0;
 
     // 1. Model family/provider base cost
-    if model_id.contains("gemini") || model_id.contains("argon") {
-        if model_id.contains("flash") {
+    if model_id.contains("gemini")
+        || model_id.contains("argon")
+        || model_id.contains("orchestrator")
+    {
+        if model_id.contains("orchestrator") {
+            score += 400;
+        } else if model_id.contains("flash") {
             score += 100;
         } else if model_id.contains("pro") {
             score += 200;
-        } else if model_id.contains("argon") {
+        } else if model_id.contains("argon")
+            || model_id.contains("carbon")
+            || model_id.contains("hydrogen")
+            || model_id.contains("neon")
+        {
             score += 300;
         } else {
-            score += 150;
+            score += 350;
         }
+    } else if model_id.contains("gpt-oss") {
+        score += 100;
+    } else if model_id.contains("haiku") {
+        score += 150;
+    } else if model_id.contains("sonnet") {
+        score += 300;
+    } else if model_id.contains("opus") {
+        score += 500;
     } else {
-        if model_id.contains("gpt-oss") {
-            score += 100;
-        } else if model_id.contains("sonnet") {
-            score += 300;
-        } else if model_id.contains("opus") {
-            score += 500;
-        } else {
-            score += 400;
-        }
+        score += 400;
     }
 
     // 2. Specific tier suffix cost adjustment
@@ -225,6 +261,8 @@ fn get_model_cost_score(model_id: &str) -> u32 {
         score += 25;
     } else if model_id.contains("medium") {
         score += 30;
+    } else if model_id.contains("xhigh") || model_id.contains("extra-high") {
+        score += 50;
     } else if model_id.contains("high")
         || model_id.contains("thinking")
         || model_id.contains("agent")
@@ -236,7 +274,7 @@ fn get_model_cost_score(model_id: &str) -> u32 {
 
     // 3. Version preference: newer versions are preferred when several
     // selectable models are returned by `agy models`.
-    if let Some((major, minor)) = parse_model_version(model_id) {
+    if let Some((major, minor)) = parse_model_version(&model_id) {
         let ver_val = major * 10 + minor.min(9);
         let discount = match ver_val {
             v if v >= 55 => 30,
@@ -258,70 +296,367 @@ fn get_model_cost_score(model_id: &str) -> u32 {
     score.max(0) as u32
 }
 
-pub fn select_default_models(model_ids: &[String]) -> Vec<String> {
-    let mut gemini_3x_list = Vec::new();
-    let mut argon_list = Vec::new();
+fn normalize_label(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn tokenize_alnum(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn is_token_subsequence(needle: &[String], haystack: &[String]) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let mut needle_idx = 0;
+    for token in haystack {
+        if *token == needle[needle_idx] {
+            needle_idx += 1;
+            if needle_idx == needle.len() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn strip_leading_and(s: &str) -> &str {
+    match s.get(..4) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("and ") => s[4..].trim(),
+        _ => s,
+    }
+}
+
+fn parse_group_model_names(description: &str) -> Vec<String> {
+    let Some(raw_list) = description.lines().find_map(|line| {
+        let (prefix, rest) = line.split_once(':')?;
+        let prefix_lower = prefix.to_ascii_lowercase();
+        (!prefix_lower.contains('.') && prefix_lower.contains("model")).then_some(rest)
+    }) else {
+        return Vec::new();
+    };
+
+    let list_segment = raw_list
+        .split(". ")
+        .next()
+        .unwrap_or(raw_list)
+        .trim()
+        .trim_end_matches('.')
+        .trim();
+
+    list_segment
+        .split(',')
+        .flat_map(|item| {
+            let item = strip_leading_and(item.trim().trim_end_matches('.').trim());
+            item.split(" and ")
+                .map(|part| part.trim().trim_end_matches('.').trim())
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn fallback_group_labels(group_name: &str) -> Vec<String> {
+    let normalized = normalize_label(group_name);
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let base = normalized
+        .strip_suffix(" models")
+        .or_else(|| normalized.strip_suffix(" model"))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&normalized);
+
+    base.split(" and ")
+        .flat_map(|part| part.split([',', '/', '&']))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn match_model_label(model: &crate::agy::AgyModel, label: &str) -> Option<(u8, usize)> {
+    let norm_label = normalize_label(label);
+    if norm_label.is_empty() {
+        return None;
+    }
+
+    let label_tokens = tokenize_alnum(&norm_label);
+    let norm_name = normalize_label(&model.name);
+    if !norm_name.is_empty() {
+        if norm_name == norm_label {
+            return Some((3, norm_label.len()));
+        }
+        if let Some(rest) = norm_name.strip_prefix(&norm_label)
+            && rest.starts_with([' ', '(', '-', '/'])
+        {
+            return Some((2, norm_label.len()));
+        }
+        let name_tokens = tokenize_alnum(&norm_name);
+        if is_token_subsequence(&label_tokens, &name_tokens) {
+            return Some((1, norm_label.len()));
+        }
+    }
+
+    let id_tokens = tokenize_alnum(&model.id);
+    if is_token_subsequence(&label_tokens, &id_tokens) {
+        return Some((0, norm_label.len()));
+    }
+
+    None
+}
+
+fn select_default_models_heuristic(models: &[crate::agy::AgyModel]) -> Vec<String> {
+    let mut gemini_list = Vec::new();
     let mut other_list = Vec::new();
 
-    // `agy models` only returns currently selectable models, so no separate
-    // retirement/deprecation filtering is needed here.
-    for id in model_ids {
-        if id.contains("argon") {
-            argon_list.push(id.clone());
-        } else if id.contains("gemini") {
-            gemini_3x_list.push(id.clone());
+    for model in models {
+        let id_lower = model.id.to_ascii_lowercase();
+        if id_lower.contains("gemini")
+            || id_lower.contains("argon")
+            || id_lower.contains("orchestrator")
+        {
+            gemini_list.push(model);
         } else {
-            other_list.push(id.clone());
+            other_list.push(model);
         }
     }
 
     let mut selected = Vec::new();
 
-    // 1. Cheapest conventional Gemini model (Gemini 3.x Flash / Pro)
-    if !gemini_3x_list.is_empty() {
-        gemini_3x_list.sort_by_key(|id| get_model_cost_score(id));
-        if let Some(cheapest_gemini) = gemini_3x_list.first() {
-            selected.push(cheapest_gemini.clone());
-        }
+    if !gemini_list.is_empty() {
+        gemini_list.sort_by_key(|model| get_model_cost_score(&model.id));
+        selected.push(gemini_list[0].id.clone());
     }
 
-    // 2. Cheapest Argon model (when available, triggered alongside the conventional Gemini model)
-    if !argon_list.is_empty() {
-        argon_list.sort_by_key(|id| get_model_cost_score(id));
-        if let Some(cheapest_argon) = argon_list.first() {
-            selected.push(cheapest_argon.clone());
-        }
-    }
-
-    // 3. Cheapest other model (Claude / GPT)
     if !other_list.is_empty() {
-        other_list.sort_by_key(|id| get_model_cost_score(id));
-        if let Some(cheapest_other) = other_list.first() {
-            selected.push(cheapest_other.clone());
-        }
+        other_list.sort_by_key(|model| get_model_cost_score(&model.id));
+        selected.push(other_list[0].id.clone());
     }
 
     selected
 }
 
+struct ModelSelection {
+    models: Vec<String>,
+    unmatched_groups: Vec<String>,
+    used_heuristic_fallback: bool,
+}
+
+fn find_best_matching_group<'a>(
+    model: &crate::agy::AgyModel,
+    candidates: impl IntoIterator<Item = (usize, &'a [String])>,
+) -> Option<usize> {
+    let mut best_group: Option<(usize, (u8, usize))> = None;
+
+    for (group_idx, labels) in candidates {
+        let mut best_label_score: Option<(u8, usize)> = None;
+        for label in labels {
+            if let Some(score) = match_model_label(model, label)
+                && best_label_score.is_none_or(|cur| score > cur)
+            {
+                best_label_score = Some(score);
+            }
+        }
+
+        if let Some(score) = best_label_score
+            && best_group.is_none_or(|(_, cur_score)| score > cur_score)
+        {
+            best_group = Some((group_idx, score));
+        }
+    }
+
+    best_group.map(|(group_idx, _)| group_idx)
+}
+
+fn resolve_default_models(
+    models: &[crate::agy::AgyModel],
+    groups: &[crate::agy::UsageGroup],
+) -> ModelSelection {
+    if models.is_empty() {
+        return ModelSelection {
+            models: Vec::new(),
+            unmatched_groups: Vec::new(),
+            used_heuristic_fallback: false,
+        };
+    }
+
+    // `agy models` only returns currently selectable models, so no separate
+    // retirement/deprecation filtering is needed here.
+    if !groups.is_empty() {
+        let mut used_fallback = Vec::with_capacity(groups.len());
+        let mut group_labels = Vec::with_capacity(groups.len());
+        for group in groups {
+            let parsed = group
+                .description
+                .as_deref()
+                .map(parse_group_model_names)
+                .unwrap_or_default();
+            if parsed.is_empty() {
+                used_fallback.push(true);
+                group_labels.push(fallback_group_labels(&group.name));
+            } else {
+                used_fallback.push(false);
+                group_labels.push(parsed);
+            }
+        }
+
+        let mut buckets: Vec<Vec<&crate::agy::AgyModel>> = vec![Vec::new(); groups.len()];
+        let mut unmatched_models = Vec::new();
+        let mut any_matched = false;
+
+        // Pass 1: Assign each model to the best-matching group from primary labels.
+        for model in models {
+            if let Some(group_idx) = find_best_matching_group(
+                model,
+                group_labels
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, labels)| (idx, labels.as_slice())),
+            ) {
+                buckets[group_idx].push(model);
+                any_matched = true;
+            } else {
+                unmatched_models.push(model);
+            }
+        }
+
+        // Pass 2: For groups whose description yielded no matches, fall back to
+        // matching their group name against models left unmatched in Pass 1.
+        if !unmatched_models.is_empty() {
+            let recovery_candidates: Vec<(usize, Vec<String>)> = groups
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| buckets[*idx].is_empty() && !used_fallback[*idx])
+                .map(|(idx, group)| (idx, fallback_group_labels(&group.name)))
+                .collect();
+
+            if !recovery_candidates.is_empty() {
+                for model in unmatched_models {
+                    if let Some(group_idx) = find_best_matching_group(
+                        model,
+                        recovery_candidates
+                            .iter()
+                            .map(|(idx, labels)| (*idx, labels.as_slice())),
+                    ) {
+                        buckets[group_idx].push(model);
+                        any_matched = true;
+                    }
+                }
+            }
+        }
+
+        if any_matched {
+            let mut selected = Vec::new();
+            let mut unmatched_groups = Vec::new();
+            for (idx, mut bucket) in buckets.into_iter().enumerate() {
+                if bucket.is_empty() {
+                    unmatched_groups.push(groups[idx].name.clone());
+                } else {
+                    bucket.sort_by_key(|model| get_model_cost_score(&model.id));
+                    selected.push(bucket[0].id.clone());
+                }
+            }
+            return ModelSelection {
+                models: selected,
+                unmatched_groups,
+                used_heuristic_fallback: false,
+            };
+        }
+    }
+
+    ModelSelection {
+        models: select_default_models_heuristic(models),
+        unmatched_groups: Vec::new(),
+        used_heuristic_fallback: !groups.is_empty(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agy::{AgyModel, UsageGroup};
+
+    fn model(id: &str, name: &str) -> AgyModel {
+        AgyModel {
+            id: id.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    fn group(name: &str, description: Option<&str>) -> UsageGroup {
+        UsageGroup {
+            name: name.to_string(),
+            description: description.map(str::to_string),
+            buckets: Vec::new(),
+        }
+    }
+
+    fn select_default_models(models: &[AgyModel], groups: &[UsageGroup]) -> Vec<String> {
+        resolve_default_models(models, groups).models
+    }
+
+    fn live_agy_models() -> Vec<AgyModel> {
+        vec![
+            model("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+            model("gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)"),
+            model("gemini-4-neon-medium", "Gemini 4 Neon (Medium)"),
+            model("gemini-4-neon-low", "Gemini 4 Neon (Low)"),
+            model("gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"),
+            model("gemini-4-carbon-high", "Gemini 4 Carbon (High)"),
+            model("gemini-4-carbon-low", "Gemini 4 Carbon (Low)"),
+            model("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+            model("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+            model("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+            model("gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"),
+            model("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
+            model("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+            model("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+            model("gemini-pro-orchestrator-neon", "Orchestrator (Neon)"),
+            model("gemini-pro-orchestrator", "Orchestrator (Carbon)"),
+            model("gemini-pro-orchestrator-argon", "Orchestrator (Argon)"),
+            model("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+            model("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+            model("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+            model("claude-opus-5-5-low", "Claude Opus 5.5 (Low)"),
+            model("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
+            model("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+            model("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+            model("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
+            model("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+            model("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+        ]
+    }
 
     #[test]
     fn test_select_default_models_uses_only_available_models() {
-        let ids = vec!["gpt-oss-120b-medium".to_string()];
-        let selected = select_default_models(&ids);
+        let models = vec![model("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)")];
+        let selected = select_default_models(&models, &[]);
         assert_eq!(selected, vec!["gpt-oss-120b-medium".to_string()]);
 
-        let ids = vec!["gemini-3.8-flash-low".to_string()];
-        let selected = select_default_models(&ids);
+        let models = vec![model("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)")];
+        let selected = select_default_models(&models, &[]);
         assert_eq!(selected, vec!["gemini-3.8-flash-low".to_string()]);
     }
 
     #[test]
     fn test_parse_model_version() {
         assert_eq!(parse_model_version("gemini-4-argon"), Some((4, 0)));
+        assert_eq!(parse_model_version("gemini-4-neon-xhigh"), Some((4, 0)));
+        assert_eq!(parse_model_version("gemini-4-carbon-low"), Some((4, 0)));
+        assert_eq!(parse_model_version("gemini-4-hydrogen-low"), Some((4, 0)));
+        assert_eq!(parse_model_version("gemini-pro-orchestrator-argon"), None);
+        assert_eq!(parse_model_version("gemini-pro-orchestrator-neon"), None);
+        assert_eq!(parse_model_version("gemini-pro-orchestrator"), None);
         assert_eq!(parse_model_version("argon"), Some((4, 0)));
         assert_eq!(parse_model_version("gemini-3.8-flash-low"), Some((3, 8)));
         assert_eq!(parse_model_version("gemini-3.7-flash-tiered"), Some((3, 7)));
@@ -342,9 +677,9 @@ mod tests {
     fn test_is_not_filtered_by_retirement_rules() {
         // `agy models` is the source of truth for availability; any returned
         // Gemini model must remain selectable regardless of its version.
-        let ids = vec!["gemini-3.6-flash-low".to_string()];
+        let models = vec![model("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)")];
         assert_eq!(
-            select_default_models(&ids),
+            select_default_models(&models, &[]),
             vec!["gemini-3.6-flash-low".to_string()]
         );
     }
@@ -362,15 +697,41 @@ mod tests {
         let score_31_pro_low = get_model_cost_score("gemini-3.1-pro-low");
         assert!(score_38_pro_low < score_31_pro_low);
 
-        // Flash (10x) < Pro (20x) < Argon (30x)
+        // Flash (10x) < Pro (20x) < Gemini 4 family (30x) < Unknown Gemini (35x) < Orchestrator (40x)
         let score_argon_low = get_model_cost_score("gemini-4-argon-low");
         let score_argon = get_model_cost_score("gemini-4-argon");
         let score_argon_high = get_model_cost_score("gemini-4-argon-high");
+        let score_carbon_low = get_model_cost_score("gemini-4-carbon-low");
+        let score_hydrogen_low = get_model_cost_score("gemini-4-hydrogen-low");
+        let score_neon_low = get_model_cost_score("gemini-4-neon-low");
+        let score_unknown_gemini_low = get_model_cost_score("gemini-4-xenon-low");
+        let score_orch_argon = get_model_cost_score("gemini-pro-orchestrator-argon");
+        let score_orch_neon = get_model_cost_score("gemini-pro-orchestrator-neon");
+        let score_orch_carbon = get_model_cost_score("gemini-pro-orchestrator");
 
         assert!(score_38_flash_low < score_38_pro_low);
         assert!(score_38_pro_low < score_argon_low);
+        assert!(score_38_pro_low < score_carbon_low);
+        assert!(score_38_pro_low < score_hydrogen_low);
+        assert!(score_38_pro_low < score_neon_low);
         assert!(score_argon_low < score_argon);
         assert!(score_argon < score_argon_high);
+        assert!(score_neon_low < score_unknown_gemini_low);
+        assert!(score_unknown_gemini_low < score_orch_argon);
+        assert!(score_argon_low < score_orch_argon);
+        assert!(score_neon_low < score_orch_neon);
+        assert!(score_carbon_low < score_orch_carbon);
+
+        // Tier ordering: low < medium < high < xhigh
+        for prefix in ["gemini-4-neon", "gemini-4-hydrogen"] {
+            let low = get_model_cost_score(&format!("{}-low", prefix));
+            let medium = get_model_cost_score(&format!("{}-medium", prefix));
+            let high = get_model_cost_score(&format!("{}-high", prefix));
+            let xhigh = get_model_cost_score(&format!("{}-xhigh", prefix));
+            assert!(low < medium);
+            assert!(medium < high);
+            assert!(high < xhigh);
+        }
 
         // Claude 5.5 scoring
         let score_sonnet_55_low = get_model_cost_score("claude-sonnet-5-5-low");
@@ -384,30 +745,270 @@ mod tests {
     }
 
     #[test]
-    fn test_select_default_models_triggers_both_gemini_3x_and_argon() {
-        // When Gemini 3.8, Argon, and Claude 5.5 are available, each category is selected
-        let ids = vec![
-            "gemini-4-argon-high".to_string(),
-            "gemini-4-argon-low".to_string(),
-            "gemini-4-argon-medium".to_string(),
-            "gemini-3.8-flash-low".to_string(),
-            "claude-sonnet-5-5-low".to_string(),
+    fn test_select_default_models_with_live_two_group_usage() {
+        let models = live_agy_models();
+        let groups = vec![
+            group(
+                "Gemini Models",
+                Some(
+                    "Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Orchestrator (Argon), Gemini 3.8 Flash",
+                ),
+            ),
+            group(
+                "Claude and GPT models",
+                Some("Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B"),
+            ),
         ];
-        let selected = select_default_models(&ids);
-        assert!(selected.contains(&"gemini-3.8-flash-low".to_string()));
-        assert!(selected.contains(&"gemini-4-argon-low".to_string()));
-        assert!(selected.contains(&"claude-sonnet-5-5-low".to_string()));
-        assert_eq!(selected.len(), 3);
 
-        // When only Gemini 3.8 and GPT are available
-        let ids_without_argon = vec![
-            "gemini-3.8-flash-low".to_string(),
-            "gpt-oss-120b-medium".to_string(),
+        let selected = select_default_models(&models, &groups);
+        assert_eq!(
+            selected,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_select_default_models_with_dedicated_argon_group() {
+        let models = live_agy_models();
+        let groups = vec![
+            group(
+                "Gemini Models",
+                Some(
+                    "Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Gemini 3.8 Flash",
+                ),
+            ),
+            group(
+                "Gemini 4 Argon",
+                Some("Models within this group: Gemini 4 Argon, Orchestrator (Argon)"),
+            ),
+            group(
+                "Claude and GPT models",
+                Some("Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B"),
+            ),
         ];
-        let selected_no_argon = select_default_models(&ids_without_argon);
-        assert!(selected_no_argon.contains(&"gemini-3.8-flash-low".to_string()));
-        assert!(selected_no_argon.contains(&"gpt-oss-120b-medium".to_string()));
-        assert_eq!(selected_no_argon.len(), 2);
+
+        let selected = select_default_models(&models, &groups);
+        assert_eq!(
+            selected,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gemini-4-argon-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_select_default_models_with_historical_short_descriptions() {
+        let models = vec![
+            model("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+            model("gemini-3.8-pro-low", "Gemini 3.8 Pro (Low)"),
+            model("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+            model("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+        ];
+        let groups = vec![
+            group(
+                "Gemini Models",
+                Some("Models within this group: Gemini Flash, Gemini Pro"),
+            ),
+            group(
+                "Claude and GPT models",
+                Some("Models within this group: Claude Opus, Claude Sonnet, GPT-OSS"),
+            ),
+        ];
+
+        let selected = select_default_models(&models, &groups);
+        assert_eq!(
+            selected,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_select_default_models_with_tsv_fallback_groups_without_description() {
+        let models = live_agy_models();
+        let groups = vec![
+            group("Gemini Models", None),
+            group("Claude and GPT models", None),
+        ];
+
+        let selected = select_default_models(&models, &groups);
+        assert_eq!(
+            selected,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_select_default_models_heuristic_fallback_merges_argon_into_gemini() {
+        let models = vec![
+            model("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+            model("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+            model("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+            model("gemini-4-neon-low", "Gemini 4 Neon (Low)"),
+            model("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+            model("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+        ];
+        let selected = select_default_models(&models, &[]);
+        assert_eq!(
+            selected,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "claude-sonnet-5-5-low".to_string(),
+            ]
+        );
+
+        let models_without_flash = vec![
+            model("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+            model("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
+        ];
+        let selected_no_flash = select_default_models(&models_without_flash, &[]);
+        assert_eq!(
+            selected_no_flash,
+            vec![
+                "gemini-4-argon-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_group_model_names() {
+        assert_eq!(
+            parse_group_model_names("Models within this group: Gemini 4 Neon, Gemini 3.8 Flash"),
+            vec!["Gemini 4 Neon", "Gemini 3.8 Flash"]
+        );
+        assert_eq!(
+            parse_group_model_names(
+                "Models within this group: Claude Opus 5.5, GPT-OSS 120B. Quota is shared."
+            ),
+            vec!["Claude Opus 5.5", "GPT-OSS 120B"]
+        );
+        assert_eq!(
+            parse_group_model_names(
+                "Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, and GPT-OSS 120B"
+            ),
+            vec!["Claude Opus 5.5", "Claude Sonnet 5.5", "GPT-OSS 120B"]
+        );
+        assert_eq!(
+            parse_group_model_names("Models within this group: Gemini Flash and Gemini Pro"),
+            vec!["Gemini Flash", "Gemini Pro"]
+        );
+        assert!(
+            parse_group_model_names("These models share a 5h limit. Note: resets every 5h.")
+                .is_empty()
+        );
+        assert_eq!(
+            parse_group_model_names("Models: 日本語モデル"),
+            vec!["日本語モデル"]
+        );
+    }
+
+    #[test]
+    fn test_select_default_models_recovers_group_when_description_does_not_match() {
+        let models = live_agy_models();
+        let groups_unknown_desc = vec![
+            group(
+                "Gemini Models",
+                Some("Models within this group: Gemini 3.8 Flash"),
+            ),
+            group(
+                "Claude & GPT models",
+                Some("Models within this group: Unknown Label"),
+            ),
+        ];
+        assert_eq!(
+            select_default_models(&models, &groups_unknown_desc),
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+
+        let groups_prose_desc = vec![
+            group(
+                "Gemini Models",
+                Some("Models within this group: Gemini 3.8 Flash"),
+            ),
+            group(
+                "Claude & GPT models",
+                Some("These models share a 5h limit. Note: see docs"),
+            ),
+        ];
+        assert_eq!(
+            select_default_models(&models, &groups_prose_desc),
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_models_falls_back_to_heuristic_when_no_group_matches() {
+        let models = live_agy_models();
+        let groups = vec![
+            group("Group A", Some("Models within this group: Unknown Alpha")),
+            group("Group B", Some("Models within this group: Unknown Beta")),
+        ];
+
+        let selection = resolve_default_models(&models, &groups);
+        assert!(selection.used_heuristic_fallback);
+        assert!(selection.unmatched_groups.is_empty());
+        assert_eq!(
+            selection.models,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_models_reports_unmatched_group() {
+        let models = live_agy_models();
+        let groups = vec![
+            group(
+                "Gemini Models",
+                Some(
+                    "Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Orchestrator (Argon), Gemini 3.8 Flash",
+                ),
+            ),
+            group("Future Models", Some("Models within this group: Future X")),
+            group(
+                "Claude and GPT models",
+                Some("Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B"),
+            ),
+        ];
+
+        let selection = resolve_default_models(&models, &groups);
+        assert!(!selection.used_heuristic_fallback);
+        assert_eq!(
+            selection.unmatched_groups,
+            vec!["Future Models".to_string()]
+        );
+        assert_eq!(
+            selection.models,
+            vec![
+                "gemini-3.8-flash-low".to_string(),
+                "gpt-oss-120b-medium".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_select_default_models_empty_models_returns_empty() {
+        let groups = vec![group("Gemini Models", None)];
+        assert!(select_default_models(&[], &groups).is_empty());
     }
 
     #[test]

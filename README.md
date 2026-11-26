@@ -5,7 +5,7 @@
 ## Features
 
 - **Quota Information Display**: Runs the Antigravity `agy` CLI's `/usage` command and renders the structured result in your terminal. Output automatically falls back to Markdown format when piped or redirected, making it CI/CD and script-friendly. JSON output format is also supported.
-- **Wakeup Functionality**: Discovers models with `agy models` and triggers them via `agy -p` to initiate quota limitation timers or wake up models.
+- **Wakeup Functionality**: Discovers active quota groups with `agy -p "/usage"` and available models with `agy models`, then triggers the most cost-effective model per group via `agy -p` to initiate quota limitation timers or wake up models.
 - **Atomic Cache Writes**: Cache files are written to a temporary file, flushed securely to physical disk (`sync_all`), and renamed atomically to prevent corruption on crash or power loss.
 - **Path Sanitization**: Cache keys are sanitized before being used in filesystem paths.
 - **Per-Account State**: Wakeup caches are isolated per agy-authenticated account when the account can be determined.
@@ -66,7 +66,7 @@ The account used for quota display is the one authenticated in the `agy` CLI.
 
 ### 3. Wakeup Trigger
 
-Trigger models to start quota limitation timers or wake them up. By default, the tool runs `agy models` to discover available models and automatically selects the most cost-effective model across all active quota categories (standard Gemini 3.x Flash/Pro models, dedicated Gemini 4 Argon models, and Claude/GPT models) from the returned list. Actual triggering is performed by `agy -p`, so no direct API calls are made.
+Trigger models to start quota limitation timers or wake them up. By default, the tool queries `agy -p "/usage"` for active quota groups and `agy models` for available models, automatically selecting the most cost-effective model for each active quota group (falling back to Gemini vs. Claude/GPT heuristic grouping if `/usage` is unavailable). Actual triggering is performed by `agy -p`, so no direct API calls are made.
 
 To prevent excessive triggers and save your quota, `wakeup` implements a 5-minute cache per model and agy account. If triggered multiple times within 5 minutes, subsequent calls will be skipped.
 

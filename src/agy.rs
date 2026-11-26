@@ -207,7 +207,13 @@ pub struct TriggerUsage {
     pub total_tokens: u64,
 }
 
-pub async fn fetch_models(debug: bool) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgyModel {
+    pub id: String,
+    pub name: String,
+}
+
+pub async fn fetch_models(debug: bool) -> Result<Vec<AgyModel>, Box<dyn std::error::Error>> {
     let output = tokio::process::Command::new("agy")
         .arg("models")
         .output()
@@ -243,13 +249,21 @@ pub async fn fetch_models(debug: bool) -> Result<Vec<String>, Box<dyn std::error
     Ok(models)
 }
 
-fn parse_models_output(stdout: &str) -> Vec<String> {
+fn parse_models_output(stdout: &str) -> Vec<AgyModel> {
     stdout
         .lines()
         .filter_map(|line| line.split_once('\t'))
-        .map(|(id, _)| id.trim())
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
+        .filter_map(|(id, rest)| {
+            let id = id.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let name = rest.split('\t').next().unwrap_or("").trim();
+            Some(AgyModel {
+                id: id.to_string(),
+                name: name.to_string(),
+            })
+        })
         .collect()
 }
 
@@ -455,11 +469,31 @@ mod tests {
     #[test]
     fn test_parse_models_output() {
         let stdout = "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n\
+                      gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\n\
+                      gemini-pro-orchestrator-argon\tOrchestrator (Argon)\textra metadata\n\
                       claude-sonnet-5-5-low\tClaude Sonnet 5.5 (Low)\n\
+                      \tMissing ID\n\
                       some informational line without a tab\n";
         assert_eq!(
             parse_models_output(stdout),
-            vec!["gemini-3.8-flash-low", "claude-sonnet-5-5-low"]
+            vec![
+                AgyModel {
+                    id: "gemini-3.8-flash-low".to_string(),
+                    name: "Gemini 3.8 Flash (Low)".to_string(),
+                },
+                AgyModel {
+                    id: "gemini-4-neon-xhigh".to_string(),
+                    name: "Gemini 4 Neon (XHigh)".to_string(),
+                },
+                AgyModel {
+                    id: "gemini-pro-orchestrator-argon".to_string(),
+                    name: "Orchestrator (Argon)".to_string(),
+                },
+                AgyModel {
+                    id: "claude-sonnet-5-5-low".to_string(),
+                    name: "Claude Sonnet 5.5 (Low)".to_string(),
+                },
+            ]
         );
     }
 
