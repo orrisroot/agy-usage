@@ -176,7 +176,7 @@ fn run_self_update() -> Result<(), Box<dyn std::error::Error>> {
         .build()?
         .update()?;
 
-    if status.updated() {
+    if status.is_updated() {
         println!(
             "{} Updated to version {}!",
             "Success:".green().bold(),
